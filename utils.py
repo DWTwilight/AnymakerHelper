@@ -5,6 +5,7 @@ import bpy # type: ignore
 AM_GRID_UNIT_SIZE = 0.08
 PREVIEW_SUFFIX = "_AM_preview"
 AM_PLANAR_TOLERANCE_RATIO = 0.05
+PREVIEW_MARKER = "anymaker_preview_of"
 
 _CUBE_CORNERS = (
     (-1.0, -1.0, -1.0), (1.0, -1.0, -1.0), (1.0, 1.0, -1.0),
@@ -34,8 +35,22 @@ def preview_name_for(obj):
     return obj.name + PREVIEW_SUFFIX
 
 
+def is_preview_object(obj):
+    return PREVIEW_MARKER in obj.keys()
+
+
 def get_preview_object(obj):
-    return bpy.data.objects.get(preview_name_for(obj))
+    """Return the preview object generated for obj, or None.
+
+    Only objects carrying the preview marker are treated as previews, so an
+    unrelated object that happens to share the preview name is never deleted.
+    """
+    candidate = bpy.data.objects.get(preview_name_for(obj))
+    if candidate is None or candidate == obj:
+        return None
+    if not is_preview_object(candidate):
+        return None
+    return candidate
 
 
 def remove_preview_object(obj):
@@ -44,7 +59,7 @@ def remove_preview_object(obj):
         return False
     mesh = preview.data
     bpy.data.objects.remove(preview, do_unlink=True)
-    if mesh.users == 0:
+    if isinstance(mesh, bpy.types.Mesh) and mesh.users == 0:
         bpy.data.meshes.remove(mesh)
     return True
 
@@ -222,9 +237,11 @@ def build_preview_mesh(source, size=AM_GRID_UNIT_SIZE,
 
     mesh = bpy.data.meshes.new(source.name + PREVIEW_SUFFIX)
     mesh.from_pydata(verts, [], faces)
-    mesh.validate()
+    # validate() drops faces it considers invalid, which can include the
+    # deliberate zero-area bridge quads, so report what the mesh really kept.
+    mesh.validate(verbose=False)
     mesh.update()
-    return mesh, bridges, caps, skipped
+    return mesh, bridges, caps, skipped, len(mesh.polygons)
 
 
 def iter_view3d_spaces():
@@ -259,12 +276,13 @@ def apply_grid_gap(space, scale, lines=None):
 def create_preview_object(source, size=AM_GRID_UNIT_SIZE,
                           include_degenerate=True):
     remove_preview_object(source)
-    mesh, bridges, caps, skipped = build_preview_mesh(
+    mesh, bridges, caps, skipped, kept = build_preview_mesh(
         source, size, include_degenerate
     )
     preview = bpy.data.objects.new(mesh.name, mesh)
+    preview[PREVIEW_MARKER] = source.name
     for collection in source.users_collection:
         collection.objects.link(preview)
     if not source.users_collection:
         bpy.context.scene.collection.objects.link(preview)
-    return preview, bridges, caps, skipped
+    return preview, bridges, caps, skipped, kept

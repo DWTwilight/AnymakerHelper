@@ -1,7 +1,7 @@
 bl_info = {
     "name": "Anymaker Helper",
     "author": "AnyMakerModding",
-    "version": (0, 2, 0),
+    "version": (0, 3, 0),
     "blender": (3, 0, 0),
     "location": "View3D > Sidebar > Anymaker Helper",
     "description": "Convert Blender objects to Anymaker preview meshes and export game save files",
@@ -45,21 +45,24 @@ class ANYMAKER_OT_generate_preview(Operator):
     @classmethod
     def poll(cls, context):
         obj = context.scene.anymaker_target
-        return obj is not None and obj.type == 'MESH'
+        if obj is None or obj.type != 'MESH':
+            return False
+        return not utils.is_preview_object(obj)
 
     def execute(self, context):
         obj = context.scene.anymaker_target
         settings = context.scene.anymaker_settings
         size = settings.grid_unit_size
         degenerate = settings.include_degenerate_faces
-        preview, bridges, caps, skipped = utils.create_preview_object(
+        preview, bridges, caps, skipped, kept = utils.create_preview_object(
             obj, size, degenerate
         )
         verts = len(obj.data.vertices)
         edges = len(obj.data.edges)
         print(f"Generate Preview Mesh: {obj.name} -> {preview.name} "
               f"({verts} vertices, {edges} edges, {bridges} bridge faces, "
-              f"{caps} caps, grid unit {size}, degenerate={degenerate})")
+              f"{caps} caps, {kept} faces kept, grid unit {size}, "
+              f"degenerate={degenerate})")
         for indices in skipped:
             print(f"  non-planar face skipped: vertices {list(indices)}")
         if skipped:
@@ -109,6 +112,10 @@ class ANYMAKER_OT_export_save(Operator):
 
     def execute(self, context):
         obj = context.scene.anymaker_target
+        if utils.is_preview_object(obj):
+            self.report({'ERROR'},
+                        "Select the original object, not its preview")
+            return {'CANCELLED'}
         print(f"Export Save File: {obj.name}")
         self.report({'INFO'}, f"Export Save File: {obj.name}")
         return {'FINISHED'}
