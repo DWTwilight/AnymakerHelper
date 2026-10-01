@@ -9,7 +9,7 @@ bl_info = {
 }
 
 import bpy # type: ignore
-from bpy.props import FloatProperty, PointerProperty # type: ignore
+from bpy.props import BoolProperty, FloatProperty, PointerProperty # type: ignore
 from bpy.types import Operator, Panel, PropertyGroup # type: ignore
 
 from . import utils
@@ -23,6 +23,12 @@ class AnymakerSettings(PropertyGroup):
         min=0.001,
         soft_max=1.0,
         unit='LENGTH',
+    )
+    include_degenerate_faces: BoolProperty(
+        name="Include Degenerate Faces",
+        description="Keep the 4 zero-area faces per edge where the cube edge "
+                    "runs parallel to the axis between the two vertices",
+        default=True,
     )
 
 
@@ -39,12 +45,17 @@ class ANYMAKER_OT_generate_preview(Operator):
 
     def execute(self, context):
         obj = context.scene.anymaker_target
-        size = context.scene.anymaker_settings.vertex_cube_size
-        preview = utils.create_preview_object(obj, size)
-        count = len(obj.data.vertices)
+        settings = context.scene.anymaker_settings
+        size = settings.vertex_cube_size
+        degenerate = settings.include_degenerate_faces
+        preview, bridges = utils.create_preview_object(obj, size, degenerate)
+        verts = len(obj.data.vertices)
+        edges = len(obj.data.edges)
         print(f"Generate Preview Mesh: {obj.name} -> {preview.name} "
-              f"({count} vertices, cube size {size})")
-        self.report({'INFO'}, f"{preview.name} created ({count} vertices)")
+              f"({verts} vertices, {edges} edges, {bridges} bridge faces, "
+              f"cube size {size}, degenerate={degenerate})")
+        self.report({'INFO'},
+                    f"{preview.name}: {verts}v {edges}e {bridges} bridges")
         return {'FINISHED'}
 
 
@@ -102,6 +113,7 @@ class VIEW3D_PT_anymaker_helper(Panel):
         box = layout.box()
         box.use_property_split = True
         box.prop(scene.anymaker_settings, "vertex_cube_size")
+        box.prop(scene.anymaker_settings, "include_degenerate_faces")
 
         layout.operator("anymaker.apply_grid_gap", icon='SNAP_GRID')
         layout.operator("anymaker.generate_preview_mesh",
