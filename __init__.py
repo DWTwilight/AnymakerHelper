@@ -32,7 +32,15 @@ class AnymakerSettings(PropertyGroup):
         name="Include Degenerate Faces",
         description="Keep the 4 zero-area faces per edge where the cube edge "
                     "runs parallel to the axis between the two vertices",
-        default=True,
+        default=False,
+    )
+    preview_opacity: FloatProperty(
+        name="Preview Opacity",
+        description="Transparency of the generated preview mesh",
+        default=utils.AM_PREVIEW_OPACITY,
+        min=0.0,
+        max=1.0,
+        soft_max=1.0,
     )
 
 
@@ -54,15 +62,16 @@ class ANYMAKER_OT_generate_preview(Operator):
         settings = context.scene.anymaker_settings
         size = settings.grid_unit_size
         degenerate = settings.include_degenerate_faces
+        opacity = settings.preview_opacity
         preview, bridges, caps, skipped, kept = utils.create_preview_object(
-            obj, size, degenerate
+            obj, size, degenerate, opacity
         )
         verts = len(obj.data.vertices)
         edges = len(obj.data.edges)
         print(f"Generate Preview Mesh: {obj.name} -> {preview.name} "
               f"({verts} vertices, {edges} edges, {bridges} bridge faces, "
               f"{caps} caps, {kept} faces kept, grid unit {size}, "
-              f"degenerate={degenerate})")
+              f"degenerate={degenerate}, opacity={opacity})")
         for indices in skipped:
             print(f"  non-planar face skipped: vertices {list(indices)}")
         if skipped:
@@ -139,6 +148,7 @@ class VIEW3D_PT_anymaker_helper(Panel):
         box.use_property_split = True
         box.prop(scene.anymaker_settings, "grid_unit_size")
         box.prop(scene.anymaker_settings, "include_degenerate_faces")
+        box.prop(scene.anymaker_settings, "preview_opacity")
 
         layout.operator("anymaker.apply_grid_gap", icon='SNAP_GRID')
         layout.operator("anymaker.generate_preview_mesh",

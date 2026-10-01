@@ -4,7 +4,9 @@ import bpy # type: ignore
 
 AM_GRID_UNIT_SIZE = 0.08
 PREVIEW_SUFFIX = "_AM_preview"
+PREVIEW_MATERIAL_SUFFIX = "_AM_preview_mat"
 AM_PLANAR_TOLERANCE_RATIO = 0.05
+AM_PREVIEW_OPACITY = 0.5
 PREVIEW_MARKER = "anymaker_preview_of"
 
 _CUBE_CORNERS = (
@@ -273,14 +275,43 @@ def apply_grid_gap(space, scale, lines=None):
     return None
 
 
+def _get_preview_material(source, opacity):
+    name = source.name + PREVIEW_MATERIAL_SUFFIX
+    material = bpy.data.materials.get(name)
+    if material is None:
+        material = bpy.data.materials.new(name)
+    material.use_nodes = True
+    material.diffuse_color = (0.8, 0.8, 0.8, opacity)
+    if hasattr(material, "blend_method"):
+        material.blend_method = 'BLEND'
+    if hasattr(material, "surface_render_method"):
+        material.surface_render_method = 'BLENDED'
+    if hasattr(material, "show_transparent_back"):
+        material.show_transparent_back = False
+
+    bsdf = material.node_tree.nodes.get("Principled BSDF")
+    if bsdf is not None:
+        for name_ in ("Alpha", "Base Color"):
+            socket = bsdf.inputs.get(name_)
+            if socket is None:
+                continue
+            if name_ == "Alpha":
+                socket.default_value = opacity
+            elif len(socket.default_value) == 4:
+                socket.default_value = (0.8, 0.8, 0.8, opacity)
+    return material
+
+
 def create_preview_object(source, size=AM_GRID_UNIT_SIZE,
-                          include_degenerate=True):
+                          include_degenerate=True, opacity=0.5):
     remove_preview_object(source)
     mesh, bridges, caps, skipped, kept = build_preview_mesh(
         source, size, include_degenerate
     )
     preview = bpy.data.objects.new(mesh.name, mesh)
     preview[PREVIEW_MARKER] = source.name
+    material = _get_preview_material(source, opacity)
+    mesh.materials.append(material)
     for collection in source.users_collection:
         collection.objects.link(preview)
     if not source.users_collection:
