@@ -12,7 +12,9 @@ import bpy # type: ignore
 from bpy.props import ( # type: ignore
     BoolProperty,
     FloatProperty,
+    IntProperty,
     PointerProperty,
+    StringProperty,
 )
 from bpy.types import Operator, Panel, PropertyGroup # type: ignore
 
@@ -113,21 +115,59 @@ class ANYMAKER_OT_export_save(Operator):
     """Export Anymaker vehicle save file from selected object"""
     bl_idname = "anymaker.export_save_file"
     bl_label = "Export Save File"
-    bl_options = {'REGISTER'}
+    bl_options = {'REGISTER', 'PRESET'}
+
+    vehicle_id: IntProperty(
+        name="Vehicle ID",
+        description="Game id written into the meta and data files",
+        default=99,
+        min=0,
+    )
+    vehicle_name: StringProperty(
+        name="Vehicle Name",
+        description="Base file name for the exported .meta and .data",
+        default="vehicle",
+    )
+    output_dir: StringProperty(
+        name="Output Dir",
+        description="Directory the .meta and .data files are written to",
+        subtype='DIR_PATH',
+        default="//out",
+    )
 
     @classmethod
     def poll(cls, context):
-        return context.scene.anymaker_target is not None
+        obj = context.scene.anymaker_target
+        if obj is None or obj.type != 'MESH':
+            return False
+        return not utils.is_preview_object(obj)
 
     def execute(self, context):
         obj = context.scene.anymaker_target
-        if utils.is_preview_object(obj):
-            self.report({'ERROR'},
-                        "Select the original object, not its preview")
+        try:
+            meta_path, data_path, collection = utils.export_vehicle(
+                obj,
+                self.vehicle_id,
+                self.output_dir,
+                self.vehicle_name,
+                context.scene.anymaker_settings.grid_unit_size,
+            )
+        except OSError as error:
+            self.report({'ERROR'}, f"Export failed: {error}")
             return {'CANCELLED'}
-        print(f"Export Save File: {obj.name}")
-        self.report({'INFO'}, f"Export Save File: {obj.name}")
+
+        count = len(collection.objects)
+        print(f"Export Save File: {obj.name} id={self.vehicle_id} "
+              f"-> {meta_path}, {data_path}, {count} labels in "
+              f"{collection.name}")
+        self.report({'INFO'},
+                    f"Exported {self.vehicle_name} "
+                    f"({len(obj.data.vertices)} nodes, "
+                    f"{len(obj.data.polygons)} plates, {count} labels)")
         return {'FINISHED'}
+
+    def invoke(self, context, event):
+        return context.window_manager.invoke_props_dialog(self)
 
 
 class VIEW3D_PT_anymaker_helper(Panel):

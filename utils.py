@@ -1,13 +1,36 @@
+import json
 import math
+import os
 
 import bpy # type: ignore
 
 AM_GRID_UNIT_SIZE = 0.08
 PREVIEW_SUFFIX = "_AM_preview"
 PREVIEW_MATERIAL_SUFFIX = "_AM_preview_mat"
+LABEL_COLLECTION_SUFFIX = "_AM_labels"
 AM_PLANAR_TOLERANCE_RATIO = 0.05
 AM_PREVIEW_OPACITY = 0.5
 PREVIEW_MARKER = "anymaker_preview_of"
+LABEL_MARKER = "anymaker_label_for"
+GROUND_CLEARANCE = 0.40
+
+_IDENTITY_TRANSFORM = {
+    "m": [0, 0, 0, 0, 0, 0, 0, 0, 0],
+    "t": [0, 0, 0],
+}
+
+_EMPTY_LINK_GROUPS = (
+    ("plate_paint", []),
+    ("grids", []),
+    ("electric_links", []),
+    ("mechanical_links", []),
+    ("liquid_links", []),
+    ("gas_links", []),
+    ("belt_links", []),
+    ("data_links", []),
+    ("loot_locations", []),
+    ("creature_locations", []),
+)
 
 _CUBE_CORNERS = (
     (-1.0, -1.0, -1.0), (1.0, -1.0, -1.0), (1.0, 1.0, -1.0),
@@ -273,6 +296,180 @@ def apply_grid_gap(space, scale, lines=None):
     if overlay is not None and _set_grid_props(overlay, scale, lines):
         return "overlay"
     return None
+
+
+def to_grid_coords(co, unit=AM_GRID_UNIT_SIZE):
+    """Convert a world-space position to integer Anymaker grid cells.
+
+    Rounds to the nearest cell, so a vertex sitting just inside or just
+    outside a cell boundary lands in the same cell.
+    """
+    return [
+        int(math.floor(component / unit + 0.5)) for component in co
+    ]
+
+
+def to_game_coords(co):
+    """Convert a Blender world position to Anymaker axes.
+
+    Blender is Z-up, the game is Y-up, so Z maps to Y and Blender's Y becomes
+    the game's Z. GROUND_CLEARANCE lifts the result so the model sits on the
+    ground plane rather than through it.
+
+    This swap mirrors the model (its determinant is -1), which flips every
+    face normal, so build_vehicle_data reverses each plate's node order to
+    keep the normals pointing outward.
+    """
+    return (co[0], co[2] + GROUND_CLEARANCE, co[1])
+
+
+def _node_positions(source, unit=AM_GRID_UNIT_SIZE):
+    matrix = source.matrix_world
+    return [
+        to_grid_coords(to_game_coords(matrix @ vertex.co), unit)
+        for vertex in source.data.vertices
+    ]
+
+
+def build_vehicle_data(source, vehicle_id, unit=AM_GRID_UNIT_SIZE):
+    positions = _node_positions(source, unit)
+
+    nodes = [
+        {"id": index + 1, "pos": pos}
+        for index, pos in enumerate(positions)
+    ]
+
+    edges = [
+        {"n0": edge.vertices[0] + 1, "n1": edge.vertices[1] + 1}
+        for edge in source.data.edges
+    ]
+
+    # Blender stores polygon loops counter-clockwise seen from the front
+    # face. The game reads the opposite winding, so the loop is reversed
+    # here to make the plate normal point outward.
+    plates = [
+        {
+            "id": index + 1,
+            "nodes": [vi + 1 for vi in reversed(polygon.vertices)],
+            "glass_impacts": [],
+        }
+        for index, polygon in enumerate(source.data.polygons)
+    ]
+
+    vehicle = {
+        "id": vehicle_id,
+        "transform": dict(_IDENTITY_TRANSFORM),
+        "nodes": nodes,
+        "edges": edges,
+        "plates": plates,
+    }
+    for name, value in _EMPTY_LINK_GROUPS:
+        vehicle[name] = list(value)
+    vehicle["buoyancy_fill"] = [0.0, 0.0]
+
+    return {
+        "definitions": {},
+        "vehicles": {"vehicles": [vehicle]},
+    }
+
+
+def build_vehicle_meta(vehicle_id):
+    return {
+        "vehicles": {
+            "vehicles": [
+                {
+                    "id": vehicle_id,
+                    "transform": dict(_IDENTITY_TRANSFORM),
+                    "bounds": {"min": [0, 0, 0], "max": [0, 0, 0]},
+                }
+            ]
+        }
+    }
+
+
+def _write_json(path, payload):
+    with open(path, "w", encoding="utf-8") as handle:
+        json.dump(payload, handle, separators=(",", ":"))
+
+
+def label_collection_for(source):
+    name = source.name + LABEL_COLLECTION_SUFFIX
+    return bpy.data.collections.get(name)
+
+
+def remove_labels(source):
+    """Delete the label collection previously created for source."""
+    collection = label_collection_for(source)
+    if collection is None:
+        return 0
+    removed = len(collection.objects)
+    for obj in list(collection.objects):
+        bpy.data.objects.remove(obj, do_unlink=True)
+    bpy.data.collections.remove(collection)
+    return removed
+
+
+def _add_label(collection, name, location, source):
+    obj = bpy.data.objects.new(name, None)
+    obj.empty_display_type = 'PLAIN_AXES'
+    obj.empty_display_size = AM_GRID_UNIT_SIZE
+    obj.show_name = True
+    obj.location = location
+    obj[LABEL_MARKER] = source.name
+    collection.objects.link(obj)
+    return obj
+
+
+def create_labels(source, unit=AM_GRID_UNIT_SIZE):
+    """Create an in-scene empty labelled for every node and plate.
+
+    All labels live in one collection named after the source, which is
+    removed and rebuilt on every export.
+    """
+    remove_labels(source)
+    collection = bpy.data.collections.new(
+        source.name + LABEL_COLLECTION_SUFFIX
+    )
+    bpy.context.scene.collection.children.link(collection)
+
+    matrix = source.matrix_world
+    positions = [
+        matrix @ vertex.co for vertex in source.data.vertices
+    ]
+
+    for index, position in enumerate(positions):
+        _add_label(collection, f"node-{index + 1}", position, source)
+
+    for index, polygon in enumerate(source.data.polygons):
+        centres = [positions[vi] for vi in polygon.vertices]
+        if centres:
+            count = len(centres)
+            location = (
+                sum(c.x for c in centres) / count,
+                sum(c.y for c in centres) / count,
+                sum(c.z for c in centres) / count,
+            )
+        else:
+            location = matrix.translation
+        _add_label(collection, f"plate-{index + 1}", location, source)
+    return collection
+
+
+def export_vehicle(source, vehicle_id, output_dir, name="vehicle",
+                   unit=AM_GRID_UNIT_SIZE):
+    """Write <name>.meta and <name>.data, then label nodes and plates."""
+    directory = bpy.path.abspath(output_dir)
+    os.makedirs(directory, exist_ok=True)
+
+    base = os.path.join(directory, name)
+    meta_path = f"{base}.meta"
+    data_path = f"{base}.data"
+
+    _write_json(meta_path, build_vehicle_meta(vehicle_id))
+    _write_json(data_path, build_vehicle_data(source, vehicle_id, unit))
+
+    collection = create_labels(source, unit)
+    return meta_path, data_path, collection
 
 
 def _get_preview_material(source, opacity):
