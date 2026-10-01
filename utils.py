@@ -58,6 +58,35 @@ def build_preview_mesh(source, size=AM_VERTEX_CUBE_SIZE):
     return mesh
 
 
+def iter_view3d_spaces():
+    for screen in bpy.data.screens:
+        for area in screen.areas:
+            if area.type == 'VIEW_3D':
+                for space in area.spaces:
+                    if space.type == 'VIEW_3D':
+                        yield space
+
+
+def _set_grid_props(holder, scale, lines):
+    if not hasattr(holder, "grid_scale"):
+        return False
+    holder.grid_scale = scale
+    if lines is not None and hasattr(holder, "grid_lines"):
+        holder.grid_lines = lines
+    if hasattr(holder, "show_floor"):
+        holder.show_floor = True
+    return True
+
+
+def apply_grid_gap(space, scale, lines=None):
+    if _set_grid_props(space, scale, lines):
+        return "space"
+    overlay = getattr(space, "overlay", None)
+    if overlay is not None and _set_grid_props(overlay, scale, lines):
+        return "overlay"
+    return None
+
+
 def create_preview_object(source, size=AM_VERTEX_CUBE_SIZE):
     remove_preview_object(source)
     mesh = build_preview_mesh(source, size)

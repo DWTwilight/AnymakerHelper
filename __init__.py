@@ -48,6 +48,26 @@ class ANYMAKER_OT_generate_preview(Operator):
         return {'FINISHED'}
 
 
+class ANYMAKER_OT_apply_grid_gap(Operator):
+    """Set the viewport grid gap to the Anymaker vertex cube size"""
+    bl_idname = "anymaker.apply_grid_gap"
+    bl_label = "Apply Grid Gap"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    def execute(self, context):
+        size = context.scene.anymaker_settings.vertex_cube_size
+        applied = 0
+        for space in utils.iter_view3d_spaces():
+            if utils.apply_grid_gap(space, size, lines=10):
+                applied += 1
+        print(f"Apply Grid Gap: {size} applied to {applied} viewport(s)")
+        if not applied:
+            self.report({'WARNING'}, "No viewport grid property found")
+            return {'CANCELLED'}
+        self.report({'INFO'}, f"Grid gap set to {size} ({applied} viewports)")
+        return {'FINISHED'}
+
+
 class ANYMAKER_OT_export_save(Operator):
     """Export Anymaker vehicle save file from selected object"""
     bl_idname = "anymaker.export_save_file"
@@ -83,6 +103,7 @@ class VIEW3D_PT_anymaker_helper(Panel):
         box.use_property_split = True
         box.prop(scene.anymaker_settings, "vertex_cube_size")
 
+        layout.operator("anymaker.apply_grid_gap", icon='SNAP_GRID')
         layout.operator("anymaker.generate_preview_mesh",
                         icon='MESH_CUBE')
         layout.operator("anymaker.export_save_file", icon='EXPORT')
@@ -91,6 +112,7 @@ class VIEW3D_PT_anymaker_helper(Panel):
 classes = (
     AnymakerSettings,
     ANYMAKER_OT_generate_preview,
+    ANYMAKER_OT_apply_grid_gap,
     ANYMAKER_OT_export_save,
     VIEW3D_PT_anymaker_helper,
 )
