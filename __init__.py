@@ -9,19 +9,23 @@ bl_info = {
 }
 
 import bpy # type: ignore
-from bpy.props import BoolProperty, FloatProperty, PointerProperty # type: ignore
+from bpy.props import ( # type: ignore
+    BoolProperty,
+    FloatProperty,
+    PointerProperty,
+)
 from bpy.types import Operator, Panel, PropertyGroup # type: ignore
 
 from . import utils
 
 
 class AnymakerSettings(PropertyGroup):
-    vertex_cube_size: FloatProperty(
-        name="Vertex Cube Size",
-        description="Edge length of the cube generated per Anymaker vertex",
-        default=utils.AM_VERTEX_CUBE_SIZE,
+    grid_unit_size: FloatProperty(
+        name="Grid Unit Size",
+        description="Anymaker grid base unit; sizes the vertex cubes and "
+                    "decides how strictly faces must be planar",
+        default=utils.AM_GRID_UNIT_SIZE,
         min=0.001,
-        soft_max=1.0,
         unit='LENGTH',
     )
     include_degenerate_faces: BoolProperty(
@@ -46,16 +50,30 @@ class ANYMAKER_OT_generate_preview(Operator):
     def execute(self, context):
         obj = context.scene.anymaker_target
         settings = context.scene.anymaker_settings
-        size = settings.vertex_cube_size
+        size = settings.grid_unit_size
         degenerate = settings.include_degenerate_faces
-        preview, bridges = utils.create_preview_object(obj, size, degenerate)
+        preview, bridges, caps, skipped = utils.create_preview_object(
+            obj, size, degenerate
+        )
         verts = len(obj.data.vertices)
         edges = len(obj.data.edges)
         print(f"Generate Preview Mesh: {obj.name} -> {preview.name} "
               f"({verts} vertices, {edges} edges, {bridges} bridge faces, "
-              f"cube size {size}, degenerate={degenerate})")
-        self.report({'INFO'},
-                    f"{preview.name}: {verts}v {edges}e {bridges} bridges")
+              f"{caps} caps, grid unit {size}, degenerate={degenerate})")
+        for indices in skipped:
+            print(f"  non-planar face skipped: vertices {list(indices)}")
+        if skipped:
+            self.report(
+                {'WARNING'},
+                f"{preview.name}: {caps} caps, {len(skipped)} faces "
+                f"skipped (not planar)"
+            )
+        else:
+            self.report(
+                {'INFO'},
+                f"{preview.name}: {verts}v {edges}e {bridges} bridges "
+                f"{caps} caps"
+            )
         return {'FINISHED'}
 
 
@@ -66,7 +84,7 @@ class ANYMAKER_OT_apply_grid_gap(Operator):
     bl_options = {'REGISTER', 'UNDO'}
 
     def execute(self, context):
-        size = context.scene.anymaker_settings.vertex_cube_size
+        size = context.scene.anymaker_settings.grid_unit_size
         applied = 0
         for space in utils.iter_view3d_spaces():
             if utils.apply_grid_gap(space, size, lines=10):
@@ -112,7 +130,7 @@ class VIEW3D_PT_anymaker_helper(Panel):
 
         box = layout.box()
         box.use_property_split = True
-        box.prop(scene.anymaker_settings, "vertex_cube_size")
+        box.prop(scene.anymaker_settings, "grid_unit_size")
         box.prop(scene.anymaker_settings, "include_degenerate_faces")
 
         layout.operator("anymaker.apply_grid_gap", icon='SNAP_GRID')
