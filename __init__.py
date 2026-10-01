@@ -1,7 +1,7 @@
 bl_info = {
     "name": "Anymaker Helper",
     "author": "AnyMakerModding",
-    "version": (0, 1, 0),
+    "version": (0, 2, 0),
     "blender": (3, 0, 0),
     "location": "View3D > Sidebar > Anymaker Helper",
     "description": "Convert Blender objects to Anymaker preview meshes and export game save files",
@@ -9,24 +9,42 @@ bl_info = {
 }
 
 import bpy # type: ignore
-from bpy.props import PointerProperty # type: ignore
-from bpy.types import Operator, Panel # type: ignore
+from bpy.props import FloatProperty, PointerProperty # type: ignore
+from bpy.types import Operator, Panel, PropertyGroup # type: ignore
+
+from . import utils
+
+
+class AnymakerSettings(PropertyGroup):
+    vertex_cube_size: FloatProperty(
+        name="Vertex Cube Size",
+        description="Edge length of the cube generated per Anymaker vertex",
+        default=utils.AM_VERTEX_CUBE_SIZE,
+        min=0.001,
+        soft_max=1.0,
+        unit='LENGTH',
+    )
 
 
 class ANYMAKER_OT_generate_preview(Operator):
     """Generate Anymaker preview mesh from selected object"""
     bl_idname = "anymaker.generate_preview_mesh"
     bl_label = "Generate Preview Mesh"
-    bl_options = {'REGISTER'}
+    bl_options = {'REGISTER', 'UNDO'}
 
     @classmethod
     def poll(cls, context):
-        return context.scene.anymaker_target is not None
+        obj = context.scene.anymaker_target
+        return obj is not None and obj.type == 'MESH'
 
     def execute(self, context):
         obj = context.scene.anymaker_target
-        print(f"Generate Preview Mesh: {obj.name}")
-        self.report({'INFO'}, f"Generate Preview Mesh: {obj.name}")
+        size = context.scene.anymaker_settings.vertex_cube_size
+        preview = utils.create_preview_object(obj, size)
+        count = len(obj.data.vertices)
+        print(f"Generate Preview Mesh: {obj.name} -> {preview.name} "
+              f"({count} vertices, cube size {size})")
+        self.report({'INFO'}, f"{preview.name} created ({count} vertices)")
         return {'FINISHED'}
 
 
@@ -61,13 +79,17 @@ class VIEW3D_PT_anymaker_helper(Panel):
 
         layout.prop(scene, "anymaker_target", text="Game Object")
 
-        row = layout.row(align=True)
-        row.operator("anymaker.generate_preview_mesh", text="Generate Preview Mesh")
-        row = layout.row(align=True)
-        row.operator("anymaker.export_save_file", text="Export Save File")
+        box = layout.box()
+        box.use_property_split = True
+        box.prop(scene.anymaker_settings, "vertex_cube_size")
+
+        layout.operator("anymaker.generate_preview_mesh",
+                        icon='MESH_CUBE')
+        layout.operator("anymaker.export_save_file", icon='EXPORT')
 
 
 classes = (
+    AnymakerSettings,
     ANYMAKER_OT_generate_preview,
     ANYMAKER_OT_export_save,
     VIEW3D_PT_anymaker_helper,
@@ -82,9 +104,14 @@ def register():
         description="Select the game object to convert/export",
         type=bpy.types.Object
     )
+    bpy.types.Scene.anymaker_settings = PointerProperty(
+        name="Anymaker Settings",
+        type=AnymakerSettings
+    )
 
 
 def unregister():
+    del bpy.types.Scene.anymaker_settings
     del bpy.types.Scene.anymaker_target
     for cls in reversed(classes):
         bpy.utils.unregister_class(cls)
