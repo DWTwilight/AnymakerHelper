@@ -8,6 +8,7 @@ bl_info = {
     "category": "Object",
 }
 
+import os
 import bpy # type: ignore
 from bpy.props import ( # type: ignore
     BoolProperty,
@@ -17,7 +18,6 @@ from bpy.props import ( # type: ignore
     StringProperty,
 )
 from bpy.types import Operator, Panel, PropertyGroup # type: ignore
-
 from . import utils
 
 
@@ -126,13 +126,13 @@ class ANYMAKER_OT_export_save(Operator):
     vehicle_name: StringProperty(
         name="Vehicle Name",
         description="Base file name for the exported .meta and .data",
-        default="vehicle",
+        default="",
     )
     output_dir: StringProperty(
         name="Output Dir",
         description="Directory the .meta and .data files are written to",
         subtype='DIR_PATH',
-        default="//out",
+        default="",
     )
 
     @classmethod
@@ -167,6 +167,23 @@ class ANYMAKER_OT_export_save(Operator):
         return {'FINISHED'}
 
     def invoke(self, context, event):
+        # Set default values based on current selection and blend file
+        obj = context.scene.anymaker_target
+        if obj is None or obj.type != 'MESH' or utils.is_preview_object(obj):
+            # Try to pick an eligible mesh
+            for candidate in context.selected_objects:
+                if candidate.type == 'MESH' and not utils.is_preview_object(candidate):
+                    obj = candidate
+                    break
+        if obj is not None:
+            if not self.vehicle_name:
+                self.vehicle_name = obj.name
+        if not self.output_dir:
+            blend_path = bpy.data.filepath
+            if blend_path:
+                self.output_dir = os.path.dirname(blend_path)
+            else:
+                self.output_dir = bpy.path.abspath("//")
         return context.window_manager.invoke_props_dialog(self)
 
 

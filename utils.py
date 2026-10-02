@@ -9,10 +9,9 @@ PREVIEW_SUFFIX = "_AM_preview"
 PREVIEW_MATERIAL_SUFFIX = "_AM_preview_mat"
 LABEL_COLLECTION_SUFFIX = "_AM_labels"
 AM_PLANAR_TOLERANCE_RATIO = 0.05
-AM_PREVIEW_OPACITY = 0.5
+AM_PREVIEW_OPACITY = 1.0
 PREVIEW_MARKER = "anymaker_preview_of"
 LABEL_MARKER = "anymaker_label_for"
-GROUND_CLEARANCE = 0.40
 
 _IDENTITY_TRANSFORM = {
     "m": [0, 0, 0, 0, 0, 0, 0, 0, 0],
@@ -313,14 +312,15 @@ def to_game_coords(co):
     """Convert a Blender world position to Anymaker axes.
 
     Blender is Z-up, the game is Y-up, so Z maps to Y and Blender's Y becomes
-    the game's Z. GROUND_CLEARANCE lifts the result so the model sits on the
-    ground plane rather than through it.
+    the game's Z.
 
     This swap mirrors the model (its determinant is -1), which flips every
     face normal, so build_vehicle_data reverses each plate's node order to
     keep the normals pointing outward.
+
+    Note: Keep the mesh above Z=0 (Blender) to avoid intersecting the ground.
     """
-    return (co[0], co[2] + GROUND_CLEARANCE, co[1])
+    return (co[0], co[2], co[1])
 
 
 def _node_positions(source, unit=AM_GRID_UNIT_SIZE):
@@ -459,6 +459,14 @@ def export_vehicle(source, vehicle_id, output_dir, name="vehicle",
                    unit=AM_GRID_UNIT_SIZE):
     """Write <name>.meta and <name>.data, then label nodes and plates."""
     directory = bpy.path.abspath(output_dir)
+    if not directory:
+        # Fall back to the current Blender file's directory
+        blend_path = bpy.data.filepath
+        if blend_path:
+            directory = os.path.dirname(blend_path)
+        else:
+            directory = bpy.path.abspath("//")
+
     os.makedirs(directory, exist_ok=True)
 
     base = os.path.join(directory, name)
