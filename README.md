@@ -22,6 +22,7 @@ Enable **Anymaker Helper**. The panel appears in the 3D viewport sidebar
 | Button | What it does |
 | --- | --- |
 | Apply Grid Gap | Sets the viewport grid spacing to the grid unit (8 cm by default) |
+| Snap To Grip Points | Moves every vertex onto its grip point and welds vertices that share one |
 | Generate Preview Mesh | Creates or replaces the in-game preview mesh: `{name}_AM_preview` |
 | Export Save File | Writes `<name>.meta` and `<name>.data` |
 
@@ -42,6 +43,32 @@ It is recommended to keep the default `[Grid Unit Size]` settings so it aligns w
 3. Select the mesh and click `[Generate Preview Mesh]` to see the in-game result.
 4. Once you are happy with the preview, click `[Export Save File]`.
 5. Move the exported files to `C:\Users\{yourUserName}\AppData\Roaming\Anymaker\creations\` to test them in game.
+
+Both `[Generate Preview Mesh]` and `[Export Save File]` snap and merge grip
+points first, so a mesh that was never cleaned up still exports correctly.
+Both edit the mesh, and both are undoable with <kbd>Ctrl</kbd>+<kbd>Z</kbd>.
+
+## Snap To Grip Points
+
+A **grip point** is the grid cell corner a vertex lands on during export: the
+same rounding the node position computation uses, turned back into a world
+position. The button does two things to the selected object:
+
+1. **Snap.** Every vertex more than a thousandth of a grid unit away from its
+   grip point is moved onto it, so the mesh matches the grid the game reads.
+2. **Merge.** Vertices that share a grip point are welded into one, so no node
+   is exported twice at the same position. Faces and edges that collapse in the
+   weld are removed.
+
+Positions are compared in world space, so rotating or scaling the object does
+not change which grip point a vertex belongs to. The status bar reports how
+many vertices were snapped and merged, and the console logs the vertices, edges
+and faces the weld removed.
+
+Vertices that share a grip point can only be merged if the mesh allows it. A
+quad whose opposite corners fall in the same cell collapses into a triangle,
+and a face whose corners all fall in one cell disappears, so keep an eye on the
+face count reported after a merge.
 
 ## Generate Preview Mesh
 
@@ -82,6 +109,9 @@ Blender is Z-up and the game is Y-up, so the conversion swaps the up axis.
 Grid conversion rounds to the nearest cell, so a vertex just inside or just
 outside a cell boundary lands in the same cell.
 
+Because the snap runs first, the exported mesh has one vertex per grip point,
+so no two nodes share a position.
+
 There is no ground clearance offset applied on export, so the whole mesh must
 stay above 0 on Blender's Z axis to keep the creation above the ground in game.
 
@@ -101,6 +131,8 @@ Labels need the viewport **Extras** overlay enabled to be visible.
 
 - Keep the mesh above 0 on Blender's Z axis. Export does not lift the model,
   so anything below 0 ends up below the ground in game.
+- Snap To Grip Points edits mesh data, so every object sharing that mesh data
+  is snapped too.
 - Only one object is exported at a time. Multi-object vehicles are not
   supported yet.
 - The planarity test measures deviation from the centroid plane rather than a

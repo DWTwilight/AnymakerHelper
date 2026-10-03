@@ -2,7 +2,9 @@ import json
 import math
 import os
 
+import bmesh # type: ignore
 import bpy # type: ignore
+from mathutils import Vector # type: ignore
 
 AM_GRID_UNIT_SIZE = 0.08
 PREVIEW_SUFFIX = "_AM_preview"
@@ -10,6 +12,7 @@ PREVIEW_MATERIAL_SUFFIX = "_AM_preview_mat"
 LABEL_COLLECTION_SUFFIX = "_AM_labels"
 AM_PLANAR_TOLERANCE_RATIO = 0.05
 AM_PREVIEW_OPACITY = 1.0
+GRIP_EPSILON_RATIO = 0.001
 PREVIEW_MARKER = "anymaker_preview_of"
 LABEL_MARKER = "anymaker_label_for"
 
@@ -323,12 +326,71 @@ def to_game_coords(co):
     return (co[0], co[2], co[1])
 
 
+def grip_position(co, unit=AM_GRID_UNIT_SIZE):
+    """Return the grip point closest to a world-space position.
+
+    A grip point is the grid cell corner a vertex lands on during export,
+    so this is the export coordinate computation run in reverse: the
+    vertex' grid cell, turned back into a world position.
+    """
+    cell = to_grid_coords(to_game_coords(co), unit)
+    return (cell[0] * unit, cell[2] * unit, cell[1] * unit)
+
+
 def _node_positions(source, unit=AM_GRID_UNIT_SIZE):
     matrix = source.matrix_world
     return [
         to_grid_coords(to_game_coords(matrix @ vertex.co), unit)
         for vertex in source.data.vertices
     ]
+
+
+def snap_to_grip_points(source, unit=AM_GRID_UNIT_SIZE):
+    """Snap every vertex onto its grip point, then merge shared ones.
+
+    Snapping puts each vertex exactly on the grid cell the game reads, and
+    merging welds the vertices that share a cell into one, so no node is
+    exported twice at the same position. Positions are compared in world
+    space and written back through the object's matrix, so a rotated or
+    scaled object snaps the same way an untransformed one does.
+
+    Returns how many vertices moved, how many were welded away, and how
+    many edges and faces the weld removed.
+    """
+    mesh = source.data
+    if not mesh.vertices:
+        return 0, 0, 0, 0
+
+    before_verts = len(mesh.vertices)
+    before_edges = len(mesh.edges)
+    before_faces = len(mesh.polygons)
+
+    matrix = source.matrix_world
+    to_local = matrix.inverted_safe()
+    epsilon = unit * GRIP_EPSILON_RATIO
+    scale = max(max(abs(axis) for axis in matrix.to_scale()), 1.0)
+
+    bm = bmesh.new()
+    bm.from_mesh(mesh)
+    moved = 0
+    for vert in bm.verts:
+        world = matrix @ vert.co
+        grip = grip_position(world, unit)
+        if any(abs(grip[axis] - world[axis]) > epsilon for axis in range(3)):
+            moved += 1
+        vert.co = to_local @ Vector(grip)
+    bm.verts.ensure_lookup_table()
+    bmesh.ops.remove_doubles(bm, verts=bm.verts, dist=epsilon / scale)
+    bm.to_mesh(mesh)
+    bm.free()
+    mesh.update()
+
+    return (
+        moved,
+        before_verts - len(mesh.vertices),
+        before_edges - len(mesh.edges),
+        before_faces - len(mesh.polygons),
+    )
 
 
 def build_vehicle_data(source, vehicle_id, unit=AM_GRID_UNIT_SIZE):

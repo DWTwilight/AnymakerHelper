@@ -1,7 +1,7 @@
 bl_info = {
     "name": "Anymaker Helper",
     "author": "AnyMakerModding",
-    "version": (0, 3, 0),
+    "version": (0, 4, 0),
     "blender": (3, 0, 0),
     "location": "View3D > Sidebar > Anymaker Helper",
     "description": "Convert Blender objects to Anymaker preview meshes and export game save files",
@@ -46,6 +46,45 @@ class AnymakerSettings(PropertyGroup):
     )
 
 
+def snap_note(moved, merged):
+    """Suffix for a status report naming the forced grip point snap."""
+    if not moved and not merged:
+        return ""
+    return f", {moved} vertices snapped, {merged} merged"
+
+
+class ANYMAKER_OT_snap_to_grip_points(Operator):
+    """Snap vertices onto their grip points and merge the shared ones"""
+    bl_idname = "anymaker.snap_to_grip_points"
+    bl_label = "Snap To Grip Points"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        obj = context.scene.anymaker_target
+        if obj is None or obj.type != 'MESH':
+            return False
+        return not utils.is_preview_object(obj)
+
+    def execute(self, context):
+        obj = context.scene.anymaker_target
+        unit = context.scene.anymaker_settings.grid_unit_size
+        moved, merged, edges, faces = utils.snap_to_grip_points(obj, unit)
+        verts = len(obj.data.vertices)
+        print(f"Snap To Grip Points: {obj.name} grid unit {unit} -> "
+              f"{moved} vertices snapped, {merged} merged, {edges} edges "
+              f"and {faces} faces removed, {verts} vertices left")
+        if not moved and not merged:
+            self.report({'INFO'},
+                        f"{obj.name}: all {verts} vertices already on grip "
+                        f"points")
+            return {'FINISHED'}
+        self.report({'INFO'},
+                    f"{obj.name}: {moved} vertices snapped, {merged} merged "
+                    f"({verts} left)")
+        return {'FINISHED'}
+
+
 class ANYMAKER_OT_generate_preview(Operator):
     """Generate Anymaker preview mesh from selected object"""
     bl_idname = "anymaker.generate_preview_mesh"
@@ -65,13 +104,15 @@ class ANYMAKER_OT_generate_preview(Operator):
         size = settings.grid_unit_size
         degenerate = settings.include_degenerate_faces
         opacity = settings.preview_opacity
+        moved, merged, _, _ = utils.snap_to_grip_points(obj, size)
         preview, bridges, caps, skipped, kept = utils.create_preview_object(
             obj, size, degenerate, opacity
         )
         verts = len(obj.data.vertices)
         edges = len(obj.data.edges)
         print(f"Generate Preview Mesh: {obj.name} -> {preview.name} "
-              f"({verts} vertices, {edges} edges, {bridges} bridge faces, "
+              f"({moved} vertices snapped, {merged} merged, "
+              f"{verts} vertices, {edges} edges, {bridges} bridge faces, "
               f"{caps} caps, {kept} faces kept, grid unit {size}, "
               f"degenerate={degenerate}, opacity={opacity})")
         for indices in skipped:
@@ -86,7 +127,7 @@ class ANYMAKER_OT_generate_preview(Operator):
             self.report(
                 {'INFO'},
                 f"{preview.name}: {verts}v {edges}e {bridges} bridges "
-                f"{caps} caps"
+                f"{caps} caps" + snap_note(moved, merged)
             )
         return {'FINISHED'}
 
@@ -115,7 +156,7 @@ class ANYMAKER_OT_export_save(Operator):
     """Export Anymaker vehicle save file from selected object"""
     bl_idname = "anymaker.export_save_file"
     bl_label = "Export Save File"
-    bl_options = {'REGISTER', 'PRESET'}
+    bl_options = {'REGISTER', 'PRESET', 'UNDO'}
 
     vehicle_id: IntProperty(
         name="Vehicle ID",
@@ -144,13 +185,15 @@ class ANYMAKER_OT_export_save(Operator):
 
     def execute(self, context):
         obj = context.scene.anymaker_target
+        unit = context.scene.anymaker_settings.grid_unit_size
+        moved, merged, _, _ = utils.snap_to_grip_points(obj, unit)
         try:
             meta_path, data_path, collection = utils.export_vehicle(
                 obj,
                 self.vehicle_id,
                 self.output_dir,
                 self.vehicle_name,
-                context.scene.anymaker_settings.grid_unit_size,
+                unit,
             )
         except OSError as error:
             self.report({'ERROR'}, f"Export failed: {error}")
@@ -159,11 +202,13 @@ class ANYMAKER_OT_export_save(Operator):
         count = len(collection.objects)
         print(f"Export Save File: {obj.name} id={self.vehicle_id} "
               f"-> {meta_path}, {data_path}, {count} labels in "
-              f"{collection.name}")
+              f"{collection.name}, {moved} vertices snapped, "
+              f"{merged} merged")
         self.report({'INFO'},
                     f"Exported {self.vehicle_name} "
                     f"({len(obj.data.vertices)} nodes, "
-                    f"{len(obj.data.polygons)} plates, {count} labels)")
+                    f"{len(obj.data.polygons)} plates, {count} labels)"
+                    + snap_note(moved, merged))
         return {'FINISHED'}
 
     def invoke(self, context, event):
@@ -208,6 +253,7 @@ class VIEW3D_PT_anymaker_helper(Panel):
         box.prop(scene.anymaker_settings, "preview_opacity")
 
         layout.operator("anymaker.apply_grid_gap", icon='SNAP_GRID')
+        layout.operator("anymaker.snap_to_grip_points", icon='SNAP_VERTEX')
         layout.operator("anymaker.generate_preview_mesh",
                         icon='MESH_CUBE')
         layout.operator("anymaker.export_save_file", icon='EXPORT')
@@ -215,6 +261,7 @@ class VIEW3D_PT_anymaker_helper(Panel):
 
 classes = (
     AnymakerSettings,
+    ANYMAKER_OT_snap_to_grip_points,
     ANYMAKER_OT_generate_preview,
     ANYMAKER_OT_apply_grid_gap,
     ANYMAKER_OT_export_save,
