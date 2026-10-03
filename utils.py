@@ -66,29 +66,49 @@ def is_preview_object(obj):
     return PREVIEW_MARKER in obj.keys()
 
 
-def get_preview_object(obj):
-    """Return the preview object generated for obj, or None.
+def _is_preview_mesh_name(name, base):
+    return name == base or name.startswith(base + ".")
 
-    Only objects carrying the preview marker are treated as previews, so an
-    unrelated object that happens to share the preview name is never deleted.
+
+def find_preview_objects(obj):
+    """Return every preview object generated for obj, whatever its name.
+
+    A preview is matched by the marker it carries rather than by name, so a
+    preview that picked up a .001 suffix when Blender had to make room for it
+    is still found.
     """
-    candidate = bpy.data.objects.get(preview_name_for(obj))
-    if candidate is None or candidate == obj:
-        return None
-    if not is_preview_object(candidate):
-        return None
-    return candidate
+    return [
+        candidate for candidate in bpy.data.objects
+        if candidate != obj and is_preview_object(candidate)
+        and candidate.get(PREVIEW_MARKER) == obj.name
+    ]
+
+
+def get_preview_object(obj):
+    """Return the preview object generated for obj, or None."""
+    return next(iter(find_preview_objects(obj)), None)
 
 
 def remove_preview_object(obj):
-    preview = get_preview_object(obj)
-    if preview is None:
-        return False
-    mesh = preview.data
-    bpy.data.objects.remove(preview, do_unlink=True)
-    if isinstance(mesh, bpy.types.Mesh) and mesh.users == 0:
-        bpy.data.meshes.remove(mesh)
-    return True
+    """Delete every preview object generated for obj, and its orphan meshes.
+
+    Matching by marker sweeps up previews that older runs left behind under a
+    .001 style name, so repeated generation stops piling up new suffixes.
+    Returns whether anything was removed.
+    """
+    removed = 0
+    for preview in find_preview_objects(obj):
+        mesh = preview.data
+        bpy.data.objects.remove(preview, do_unlink=True)
+        if isinstance(mesh, bpy.types.Mesh) and mesh.users == 0:
+            bpy.data.meshes.remove(mesh)
+        removed += 1
+
+    base = preview_name_for(obj)
+    for mesh in list(bpy.data.meshes):
+        if mesh.users == 0 and _is_preview_mesh_name(mesh.name, base):
+            bpy.data.meshes.remove(mesh)
+    return removed > 0
 
 
 def _append_cube(verts, faces, center, size):
@@ -584,3 +604,31 @@ def create_preview_object(source, size=AM_GRID_UNIT_SIZE,
     if not source.users_collection:
         bpy.context.scene.collection.objects.link(preview)
     return preview, bridges, caps, skipped, kept
+
+
+def set_preview_hidden(source, hidden):
+    """Hide or show the preview object generated for source.
+
+    Returns the preview object, or None when source has no preview, so a
+    missing preview is never mistaken for a visibility change.
+    """
+    preview = get_preview_object(source)
+    if preview is None:
+        return None
+    preview.hide_viewport = hidden
+    return preview
+
+
+def refresh_preview(source, size=AM_GRID_UNIT_SIZE,
+                    include_degenerate=True, opacity=AM_PREVIEW_OPACITY):
+    """Snap to grip points, then rebuild the preview object.
+
+    Shared by the Generate Preview Mesh button and the edit mode watcher, so
+    both go through the same pipeline. Returns (moved, merged, preview,
+    bridges, caps, skipped, kept).
+    """
+    moved, merged, _, _ = snap_to_grip_points(source, size)
+    preview, bridges, caps, skipped, kept = create_preview_object(
+        source, size, include_degenerate, opacity
+    )
+    return moved, merged, preview, bridges, caps, skipped, kept

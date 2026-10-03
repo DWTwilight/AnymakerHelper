@@ -1,7 +1,7 @@
 bl_info = {
     "name": "Anymaker Helper",
     "author": "AnyMakerModding",
-    "version": (0, 4, 0),
+    "version": (0, 5, 0),
     "blender": (3, 0, 0),
     "location": "View3D > Sidebar > Anymaker Helper",
     "description": "Convert Blender objects to Anymaker preview meshes and export game save files",
@@ -10,6 +10,7 @@ bl_info = {
 
 import os
 import bpy # type: ignore
+from bpy.app.handlers import persistent # type: ignore
 from bpy.props import ( # type: ignore
     BoolProperty,
     FloatProperty,
@@ -19,6 +20,114 @@ from bpy.props import ( # type: ignore
 )
 from bpy.types import Operator, Panel, PropertyGroup # type: ignore
 from . import utils
+
+
+_EDIT_STATE = {"primed": False, "object": None, "mode": None}
+_HIDDEN_PREVIEW = {"name": None}
+
+
+def snap_note(moved, merged):
+    """Suffix for a status report naming the forced grip point snap."""
+    if not moved and not merged:
+        return ""
+    return f", {moved} vertices snapped, {merged} merged"
+
+
+def _mesh_object(name):
+    """Look up a mesh object by name, tolerating a stale or freed name."""
+    obj = bpy.data.objects.get(name) if name else None
+    if obj is None or obj.type != 'MESH':
+        return None
+    return obj
+
+
+def _hide_preview(obj):
+    preview = utils.set_preview_hidden(obj, True)
+    if preview is None:
+        return False
+    _HIDDEN_PREVIEW["name"] = preview.name
+    return True
+
+
+def _restore_hidden_preview():
+    """Unhide the preview this add-on hid, if it is still around."""
+    name = _HIDDEN_PREVIEW["name"]
+    preview = bpy.data.objects.get(name) if name else None
+    if preview is not None:
+        preview.hide_viewport = False
+    _HIDDEN_PREVIEW["name"] = None
+
+
+def _defer(func, *args):
+    """Run func after the depsgraph update that scheduled it has finished.
+
+    Editing objects from inside a depsgraph callback tags the depsgraph
+    again, so the work is handed to a timer instead.
+    """
+    def callback():
+        func(*args)
+        return None
+
+    bpy.app.timers.register(callback, first_interval=0.0)
+
+
+def _refresh_preview(scene, obj):
+    if obj.mode == 'EDIT':
+        return
+    settings = scene.anymaker_settings
+    moved, merged, preview, _, _, skipped, _ = utils.refresh_preview(
+        obj,
+        settings.grid_unit_size,
+        settings.include_degenerate_faces,
+        settings.preview_opacity,
+    )
+    _restore_hidden_preview()
+    print(f"Refresh Preview On Edit Mode: {preview.name} rebuilt from "
+          f"{obj.name} ({moved} vertices snapped, {merged} merged)")
+    for indices in skipped:
+        print(f"  non-planar face skipped: vertices {list(indices)}")
+
+
+def _refresh_preview_setting_changed(self, context):
+    if not self.refresh_preview_on_edit:
+        _restore_hidden_preview()
+
+
+@persistent
+def _anymaker_depsgraph_update(scene, depsgraph):
+    """Hide the preview on entering edit mode, rebuild it on leaving.
+
+    Only the Game Object set in the add-on panel is watched, so editing any
+    other object leaves its preview alone. Object names are tracked instead of
+    references, since an object edited and deleted in one session leaves a
+    dangling reference behind.
+    """
+    target = scene.anymaker_target
+    name = target.name if target is not None else None
+    mode = target.mode if target is not None else 'OBJECT'
+
+    state = _EDIT_STATE
+    if not state["primed"]:
+        state.update(primed=True, object=name, mode=mode)
+        return
+    if (name, mode) == (state["object"], state["mode"]):
+        return
+
+    previous, previous_mode = state["object"], state["mode"]
+    state.update(object=name, mode=mode)
+
+    if not scene.anymaker_settings.refresh_preview_on_edit:
+        return
+    if mode == 'EDIT':
+        edited = _mesh_object(name)
+        if edited is not None:
+            _hide_preview(edited)
+        return
+    if previous_mode != 'EDIT' or previous != name:
+        return
+    source = _mesh_object(previous)
+    if source is not None:
+        _defer(_refresh_preview, scene, source)
 
 
 class AnymakerSettings(PropertyGroup):
@@ -44,13 +153,13 @@ class AnymakerSettings(PropertyGroup):
         max=1.0,
         soft_max=1.0,
     )
-
-
-def snap_note(moved, merged):
-    """Suffix for a status report naming the forced grip point snap."""
-    if not moved and not merged:
-        return ""
-    return f", {moved} vertices snapped, {merged} merged"
+    refresh_preview_on_edit: BoolProperty(
+        name="Refresh Preview On Edit Mode",
+        description="Hide the preview mesh while the selected object is in "
+                    "edit mode, then rebuild it when leaving edit mode",
+        default=False,
+        update=_refresh_preview_setting_changed,
+    )
 
 
 class ANYMAKER_OT_snap_to_grip_points(Operator):
@@ -104,9 +213,8 @@ class ANYMAKER_OT_generate_preview(Operator):
         size = settings.grid_unit_size
         degenerate = settings.include_degenerate_faces
         opacity = settings.preview_opacity
-        moved, merged, _, _ = utils.snap_to_grip_points(obj, size)
-        preview, bridges, caps, skipped, kept = utils.create_preview_object(
-            obj, size, degenerate, opacity
+        moved, merged, preview, bridges, caps, skipped, kept = (
+            utils.refresh_preview(obj, size, degenerate, opacity)
         )
         verts = len(obj.data.vertices)
         edges = len(obj.data.edges)
@@ -251,6 +359,7 @@ class VIEW3D_PT_anymaker_helper(Panel):
         box.prop(scene.anymaker_settings, "grid_unit_size")
         box.prop(scene.anymaker_settings, "include_degenerate_faces")
         box.prop(scene.anymaker_settings, "preview_opacity")
+        box.prop(scene.anymaker_settings, "refresh_preview_on_edit")
 
         layout.operator("anymaker.apply_grid_gap", icon='SNAP_GRID')
         layout.operator("anymaker.snap_to_grip_points", icon='SNAP_VERTEX')
@@ -281,9 +390,17 @@ def register():
         name="Anymaker Settings",
         type=AnymakerSettings
     )
+    handlers = bpy.app.handlers.depsgraph_update_post
+    if _anymaker_depsgraph_update not in handlers:
+        handlers.append(_anymaker_depsgraph_update)
 
 
 def unregister():
+    _restore_hidden_preview()
+    handlers = bpy.app.handlers.depsgraph_update_post
+    if _anymaker_depsgraph_update in handlers:
+        handlers.remove(_anymaker_depsgraph_update)
+    _EDIT_STATE.update(primed=False, object=None, mode=None)
     del bpy.types.Scene.anymaker_settings
     del bpy.types.Scene.anymaker_target
     for cls in reversed(classes):

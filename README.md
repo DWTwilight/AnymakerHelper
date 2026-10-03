@@ -33,6 +33,7 @@ Enable **Anymaker Helper**. The panel appears in the 3D viewport sidebar
 | Grid Unit Size | 0.08 m | The game's base grid unit |
 | Include Degenerate Faces | on | Keep zero-area faces (see below) |
 | Preview Opacity | 1.0 | Transparency of the preview mesh |
+| Refresh Preview On Edit Mode | off | Hide the preview in edit mode, rebuild it on exit |
 
 It is recommended to keep the default `[Grid Unit Size]` settings so it aligns with the game.
 
@@ -75,6 +76,11 @@ face count reported after a merge.
 Anymaker models are built from cubes, edges and plates rather than points,
 lines and faces, so the preview reproduces all three.
 
+Generating removes the previous preview first. Previews are matched by the
+marker they carry rather than by name, so an older preview that picked up a
+`.001` suffix is cleaned up too and the new one gets the plain
+`{name}_AM_preview` name back.
+
 **Vertices.** Every original vertex becomes a cube of one grid unit, centred on
 the vertex. Cubes are always axis-aligned in world space, so rotating or
 scaling the source object does not rotate the cubes.
@@ -90,6 +96,18 @@ corner of each of its cubes along the face normal. The cap keeps the original
 face's edge count and vertex order, so plate orientation is preserved. Faces
 that are not planar within tolerance are skipped and listed in the console,
 and the status bar reports a warning.
+
+### Refresh Preview On Edit Mode
+
+Turn on **Refresh Preview On Edit Mode** to keep the preview in step with
+edits. The preview mesh then hides as soon as the selected object enters edit
+mode, so it does not sit in the way of the vertices being moved, and is
+rebuilt — snapped and merged first, exactly like the button — when the object
+leaves edit mode. The console logs each rebuild and any face it had to skip.
+
+The *Game Object* set in the panel is the one watched, not whatever else is
+selected: entering and leaving edit mode on any other object changes nothing.
+Turning the option off while a preview is hidden brings that preview back.
 
 ## Export Save File
 
