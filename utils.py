@@ -589,6 +589,63 @@ def _get_preview_material(source, opacity):
     return material
 
 
+def _copy_prop(target, source, name):
+    """Copy one modifier property, handling arrays and vectors elementwise."""
+    if not (hasattr(source, name) and hasattr(target, name)):
+        return
+    value = getattr(source, name)
+    if hasattr(value, "__len__") and not isinstance(value, str):
+        target_value = getattr(target, name)
+        for index in range(len(value)):
+            target_value[index] = value[index]
+    else:
+        setattr(target, name, value)
+
+
+_MIRROR_COPY_PROPS = (
+    "use_axis",
+    "use_bisect_axis",
+    "use_bisect_flip_axis",
+    "use_clip",
+    "use_mirror_merge",
+    "merge_threshold",
+    "use_mirror_vertex_groups",
+    "use_mirror_u",
+    "use_mirror_v",
+    "mirror_u_offset",
+    "mirror_v_offset",
+    "offset",
+    "show_viewport",
+    "show_in_editmode",
+    "show_on_cage",
+)
+
+
+def copy_mirror_modifiers(source, preview):
+    """Copy every Mirror modifier from source onto the preview object.
+
+    The preview object has an identity transform and holds world-space
+    geometry, while a Mirror modifier works in the owner's local space. A
+    modifier that has no mirror object would therefore mirror about the world
+    origin instead of the source's own centre, so it is pointed at the source
+    to put the mirror plane back where the source has it. Returns how many
+    were copied.
+    """
+    copied = 0
+    for modifier in source.modifiers:
+        if modifier.type != 'MIRROR':
+            continue
+        target = preview.modifiers.new(modifier.name, 'MIRROR')
+        for name in _MIRROR_COPY_PROPS:
+            _copy_prop(target, modifier, name)
+        if modifier.mirror_object is None:
+            target.mirror_object = source
+        else:
+            target.mirror_object = modifier.mirror_object
+        copied += 1
+    return copied
+
+
 def create_preview_object(source, size=AM_GRID_UNIT_SIZE,
                           include_degenerate=True, opacity=0.5):
     remove_preview_object(source)
@@ -603,6 +660,7 @@ def create_preview_object(source, size=AM_GRID_UNIT_SIZE,
         collection.objects.link(preview)
     if not source.users_collection:
         bpy.context.scene.collection.objects.link(preview)
+    copy_mirror_modifiers(source, preview)
     return preview, bridges, caps, skipped, kept
 
 

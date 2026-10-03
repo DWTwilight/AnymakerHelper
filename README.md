@@ -97,6 +97,11 @@ face's edge count and vertex order, so plate orientation is preserved. Faces
 that are not planar within tolerance are skipped and listed in the console,
 and the status bar reports a warning.
 
+**Mirror.** A Mirror modifier on the source is copied onto the preview, so the
+mirrored half shows up in the preview too. The copy is pointed at the source
+object, which keeps the mirror plane where the source has it even though the
+preview works in world space. Other modifier types are not copied.
+
 ### Refresh Preview On Edit Mode
 
 Turn on **Refresh Preview On Edit Mode** to keep the preview in step with
