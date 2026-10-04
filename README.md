@@ -12,6 +12,9 @@ Requires Blender 4.5 LTS.
   caps, so you can see the in-game result before you export. A Mirror
   modifier is carried over, and the preview can refresh itself every time you
   leave edit mode.
+- **Double-sided faces:** Mark all edges of a face as seams to make it
+  double-sided. The preview renders a flipped copy of its cap, and export
+  writes a secondary plate, so it shows from both sides in game.
 - **Save file export:** Writes the `.meta` and `.data` JSON the game reads, plus
   in-scene labels naming every node and plate it exported.
 - **Grid-based modeling:** Sets the viewport grid to the game's unit, so the

@@ -209,6 +209,41 @@ def _quad_centroid(verts, quad):
     return cx * 0.25, cy * 0.25, cz * 0.25
 
 
+def _polygons_double_sided(source):
+    """Indices of polygons whose edges are all marked as seams."""
+    mesh = source.data
+    seam_edges = set()
+    for edge in mesh.edges:
+        if edge.use_seam:
+            seam_edges.add(tuple(sorted(edge.vertices)))
+    doubles = set()
+    for polygon in mesh.polygons:
+        verts = tuple(polygon.vertices)
+        if verts and all(
+            tuple(sorted((verts[k], verts[(k + 1) % len(verts)]))) in seam_edges
+            for k in range(len(verts))
+        ):
+            doubles.add(polygon.index)
+    return doubles
+
+
+def _export_plate_loops(source):
+    """Vertex loops in plate export order.
+
+    A plate whose edges are all marked as seams is exported twice, the
+    second copy wound the opposite way, so the game shows it from both
+    sides.
+    """
+    doubles = _polygons_double_sided(source)
+    loops = []
+    for polygon in source.data.polygons:
+        loop = tuple(polygon.vertices)
+        loops.append(loop)
+        if polygon.index in doubles:
+            loops.append(tuple(reversed(loop)))
+    return loops
+
+
 def _append_face_caps(faces, source, centers, bases, tolerance):
     """Bridge the cubes of every planar face with a cap polygon.
 
@@ -218,6 +253,7 @@ def _append_face_caps(faces, source, centers, bases, tolerance):
     """
     caps = 0
     skipped = []
+    doubles = _polygons_double_sided(source)
     for polygon in source.data.polygons:
         indices = tuple(polygon.vertices)
         points = [tuple(centers[i]) for i in indices]
@@ -231,6 +267,14 @@ def _append_face_caps(faces, source, centers, bases, tolerance):
             cap.append(bases[vi] + corner)
         faces.append(tuple(cap))
         caps += 1
+        if polygon.index in doubles:
+            flip_corner_cap = []
+            flipped = (-normal[0], -normal[1], -normal[2])
+            for vi in indices:
+                corner = _farthest_corner(flipped)
+                flip_corner_cap.append(bases[vi] + corner)
+            faces.append(tuple(reversed(flip_corner_cap)))
+            caps += 1
     return caps, skipped
 
 
@@ -442,10 +486,10 @@ def build_vehicle_data(source, vehicle_id, unit=AM_GRID_UNIT_SIZE):
     plates = [
         {
             "id": index + 1,
-            "nodes": [vi + 1 for vi in reversed(polygon.vertices)],
+            "nodes": [vi + 1 for vi in reversed(loop)],
             "glass_impacts": [],
         }
-        for index, polygon in enumerate(source.data.polygons)
+        for index, loop in enumerate(_export_plate_loops(source))
     ]
 
     vehicle = {
@@ -532,8 +576,8 @@ def create_labels(source, unit=AM_GRID_UNIT_SIZE):
     for index, position in enumerate(positions):
         _add_label(collection, f"node-{index + 1}", position, source)
 
-    for index, polygon in enumerate(source.data.polygons):
-        centres = [positions[vi] for vi in polygon.vertices]
+    for index, loop in enumerate(_export_plate_loops(source)):
+        centres = [positions[vi] for vi in loop]
         if centres:
             count = len(centres)
             location = (
