@@ -1,6 +1,16 @@
+# Anymaker Helper - Blender add-on for building Anymaker vehicles.
+# Copyright (C) 2026 DWTwilight
+#
+# This program is free software: you can redistribute it and/or modify it
+# under the terms of the GNU General Public License as published by the Free
+# Software Foundation, either version 3 of the License, or (at your option) any
+# later version. See LICENSE for the full text.
+#
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 bl_info = {
     "name": "Anymaker Helper",
-    "author": "AnyMakerModding",
+    "author": "DWTwilight",
     "version": (0, 5, 0),
     "blender": (3, 0, 0),
     "location": "View3D > Sidebar > Anymaker Helper",
