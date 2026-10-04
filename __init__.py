@@ -37,7 +37,7 @@ _HIDDEN_PREVIEW = {"name": None}
 
 
 def snap_note(moved, merged):
-    """Suffix for a status report naming the forced grip point snap."""
+    """Suffix for a status report naming the forced grid point snap."""
     if not moved and not merged:
         return ""
     return f", {moved} vertices snapped, {merged} merged"
@@ -172,10 +172,10 @@ class AnymakerSettings(PropertyGroup):
     )
 
 
-class ANYMAKER_OT_snap_to_grip_points(Operator):
-    """Snap vertices onto their grip points and merge the shared ones"""
-    bl_idname = "anymaker.snap_to_grip_points"
-    bl_label = "Snap To Grip Points"
+class ANYMAKER_OT_snap_to_grid_points(Operator):
+    """Snap vertices onto their grid points and merge the shared ones"""
+    bl_idname = "anymaker.snap_to_grid_points"
+    bl_label = "Snap To Grid Points"
     bl_options = {'REGISTER', 'UNDO'}
 
     @classmethod
@@ -188,14 +188,14 @@ class ANYMAKER_OT_snap_to_grip_points(Operator):
     def execute(self, context):
         obj = context.scene.anymaker_target
         unit = context.scene.anymaker_settings.grid_unit_size
-        moved, merged, edges, faces = utils.snap_to_grip_points(obj, unit)
+        moved, merged, edges, faces = utils.snap_to_grid_points(obj, unit)
         verts = len(obj.data.vertices)
-        print(f"Snap To Grip Points: {obj.name} grid unit {unit} -> "
+        print(f"Snap To Grid Points: {obj.name} grid unit {unit} -> "
               f"{moved} vertices snapped, {merged} merged, {edges} edges "
               f"and {faces} faces removed, {verts} vertices left")
         if not moved and not merged:
             self.report({'INFO'},
-                        f"{obj.name}: all {verts} vertices already on grip "
+                        f"{obj.name}: all {verts} vertices already on grid "
                         f"points")
             return {'FINISHED'}
         self.report({'INFO'},
@@ -304,7 +304,7 @@ class ANYMAKER_OT_export_save(Operator):
     def execute(self, context):
         obj = context.scene.anymaker_target
         unit = context.scene.anymaker_settings.grid_unit_size
-        moved, merged, _, _ = utils.snap_to_grip_points(obj, unit)
+        moved, merged, _, _ = utils.snap_to_grid_points(obj, unit)
         try:
             meta_path, data_path, collection = utils.export_vehicle(
                 obj,
@@ -372,7 +372,7 @@ class VIEW3D_PT_anymaker_helper(Panel):
         box.prop(scene.anymaker_settings, "refresh_preview_on_edit")
 
         layout.operator("anymaker.apply_grid_gap", icon='SNAP_GRID')
-        layout.operator("anymaker.snap_to_grip_points", icon='SNAP_VERTEX')
+        layout.operator("anymaker.snap_to_grid_points", icon='SNAP_VERTEX')
         layout.operator("anymaker.generate_preview_mesh",
                         icon='MESH_CUBE')
         layout.operator("anymaker.export_save_file", icon='EXPORT')
@@ -380,7 +380,7 @@ class VIEW3D_PT_anymaker_helper(Panel):
 
 classes = (
     AnymakerSettings,
-    ANYMAKER_OT_snap_to_grip_points,
+    ANYMAKER_OT_snap_to_grid_points,
     ANYMAKER_OT_generate_preview,
     ANYMAKER_OT_apply_grid_gap,
     ANYMAKER_OT_export_save,

@@ -22,7 +22,7 @@ PREVIEW_MATERIAL_SUFFIX = "_AM_preview_mat"
 LABEL_COLLECTION_SUFFIX = "_AM_labels"
 AM_PLANAR_TOLERANCE_RATIO = 0.05
 AM_PREVIEW_OPACITY = 1.0
-GRIP_EPSILON_RATIO = 0.001
+GRID_EPSILON_RATIO = 0.001
 PREVIEW_MARKER = "anymaker_preview_of"
 LABEL_MARKER = "anymaker_label_for"
 
@@ -356,10 +356,10 @@ def to_game_coords(co):
     return (co[0], co[2], co[1])
 
 
-def grip_position(co, unit=AM_GRID_UNIT_SIZE):
-    """Return the grip point closest to a world-space position.
+def grid_position(co, unit=AM_GRID_UNIT_SIZE):
+    """Return the grid point closest to a world-space position.
 
-    A grip point is the grid cell corner a vertex lands on during export,
+    A grid point is the grid cell corner a vertex lands on during export,
     so this is the export coordinate computation run in reverse: the
     vertex' grid cell, turned back into a world position.
     """
@@ -375,8 +375,8 @@ def _node_positions(source, unit=AM_GRID_UNIT_SIZE):
     ]
 
 
-def snap_to_grip_points(source, unit=AM_GRID_UNIT_SIZE):
-    """Snap every vertex onto its grip point, then merge shared ones.
+def snap_to_grid_points(source, unit=AM_GRID_UNIT_SIZE):
+    """Snap every vertex onto its grid point, then merge shared ones.
 
     Snapping puts each vertex exactly on the grid cell the game reads, and
     merging welds the vertices that share a cell into one, so no node is
@@ -397,7 +397,7 @@ def snap_to_grip_points(source, unit=AM_GRID_UNIT_SIZE):
 
     matrix = source.matrix_world
     to_local = matrix.inverted_safe()
-    epsilon = unit * GRIP_EPSILON_RATIO
+    epsilon = unit * GRID_EPSILON_RATIO
     scale = max(max(abs(axis) for axis in matrix.to_scale()), 1.0)
 
     bm = bmesh.new()
@@ -405,10 +405,10 @@ def snap_to_grip_points(source, unit=AM_GRID_UNIT_SIZE):
     moved = 0
     for vert in bm.verts:
         world = matrix @ vert.co
-        grip = grip_position(world, unit)
-        if any(abs(grip[axis] - world[axis]) > epsilon for axis in range(3)):
+        grid = grid_position(world, unit)
+        if any(abs(grid[axis] - world[axis]) > epsilon for axis in range(3)):
             moved += 1
-        vert.co = to_local @ Vector(grip)
+        vert.co = to_local @ Vector(grid)
     bm.verts.ensure_lookup_table()
     bmesh.ops.remove_doubles(bm, verts=bm.verts, dist=epsilon / scale)
     bm.to_mesh(mesh)
@@ -689,13 +689,13 @@ def set_preview_hidden(source, hidden):
 
 def refresh_preview(source, size=AM_GRID_UNIT_SIZE,
                     include_degenerate=True, opacity=AM_PREVIEW_OPACITY):
-    """Snap to grip points, then rebuild the preview object.
+    """Snap to grid points, then rebuild the preview object.
 
     Shared by the Generate Preview Mesh button and the edit mode watcher, so
     both go through the same pipeline. Returns (moved, merged, preview,
     bridges, caps, skipped, kept).
     """
-    moved, merged, _, _ = snap_to_grip_points(source, size)
+    moved, merged, _, _ = snap_to_grid_points(source, size)
     preview, bridges, caps, skipped, kept = create_preview_object(
         source, size, include_degenerate, opacity
     )
