@@ -310,7 +310,7 @@ def _append_bridges(verts, faces, base_a, base_b, origin, axis,
 
 
 def build_preview_mesh(source, size=AM_GRID_UNIT_SIZE,
-                       include_degenerate=True):
+                       include_degenerate=True, name=None):
     matrix = source.matrix_world
     verts = []
     faces = []
@@ -336,7 +336,7 @@ def build_preview_mesh(source, size=AM_GRID_UNIT_SIZE,
         tolerance=size * AM_PLANAR_TOLERANCE_RATIO
     )
 
-    mesh = bpy.data.meshes.new(source.name + PREVIEW_SUFFIX)
+    mesh = bpy.data.meshes.new(name or (source.name + PREVIEW_SUFFIX))
     mesh.from_pydata(verts, [], faces)
     # validate() drops faces it considers invalid, which can include the
     # deliberate zero-area bridge quads, so report what the mesh really kept.
@@ -556,11 +556,13 @@ def _add_label(collection, name, location, source):
     return obj
 
 
-def create_labels(source, unit=AM_GRID_UNIT_SIZE):
+def create_labels(source, unit=AM_GRID_UNIT_SIZE, geometry=None):
     """Create an in-scene empty labelled for every node and plate.
 
     All labels live in one collection named after the source, which is
-    removed and rebuilt on every export.
+    removed and rebuilt on every export. Labels are placed from geometry,
+    which defaults to source but can be a modifier-baked copy whose nodes
+    and plates match what is exported.
     """
     remove_labels(source)
     collection = bpy.data.collections.new(
@@ -568,15 +570,16 @@ def create_labels(source, unit=AM_GRID_UNIT_SIZE):
     )
     bpy.context.scene.collection.children.link(collection)
 
-    matrix = source.matrix_world
+    geometry = geometry or source
+    matrix = geometry.matrix_world
     positions = [
-        matrix @ vertex.co for vertex in source.data.vertices
+        matrix @ vertex.co for vertex in geometry.data.vertices
     ]
 
     for index, position in enumerate(positions):
         _add_label(collection, f"node-{index + 1}", position, source)
 
-    for index, loop in enumerate(_export_plate_loops(source)):
+    for index, loop in enumerate(_export_plate_loops(geometry)):
         centres = [positions[vi] for vi in loop]
         if centres:
             count = len(centres)
@@ -609,10 +612,13 @@ def export_vehicle(source, vehicle_id, output_dir, name="vehicle",
     meta_path = f"{base}.meta"
     data_path = f"{base}.data"
 
-    _write_json(meta_path, build_vehicle_meta(vehicle_id))
-    _write_json(data_path, build_vehicle_data(source, vehicle_id, unit))
-
-    collection = create_labels(source, unit)
+    temp = _temp_object_with_modifiers(source)
+    try:
+        _write_json(meta_path, build_vehicle_meta(vehicle_id))
+        _write_json(data_path, build_vehicle_data(temp, vehicle_id, unit))
+        collection = create_labels(source, unit, temp)
+    finally:
+        _remove_temp_object(temp)
     return meta_path, data_path, collection
 
 
@@ -643,69 +649,62 @@ def _get_preview_material(source, opacity):
     return material
 
 
-def _copy_prop(target, source, name):
-    """Copy one modifier property, handling arrays and vectors elementwise."""
-    if not (hasattr(source, name) and hasattr(target, name)):
-        return
-    value = getattr(source, name)
-    if hasattr(value, "__len__") and not isinstance(value, str):
-        target_value = getattr(target, name)
-        for index in range(len(value)):
-            target_value[index] = value[index]
-    else:
-        setattr(target, name, value)
+def _apply_all_modifiers(obj):
+    """Bake every modifier on obj into its mesh data.
 
-
-_MIRROR_COPY_PROPS = (
-    "use_axis",
-    "use_bisect_axis",
-    "use_bisect_flip_axis",
-    "use_clip",
-    "use_mirror_merge",
-    "merge_threshold",
-    "use_mirror_vertex_groups",
-    "use_mirror_u",
-    "use_mirror_v",
-    "mirror_u_offset",
-    "mirror_v_offset",
-    "offset",
-    "show_viewport",
-    "show_in_editmode",
-    "show_on_cage",
-)
-
-
-def copy_mirror_modifiers(source, preview):
-    """Copy every Mirror modifier from source onto the preview object.
-
-    The preview object has an identity transform and holds world-space
-    geometry, while a Mirror modifier works in the owner's local space. A
-    modifier that has no mirror object would therefore mirror about the world
-    origin instead of the source's own centre, so it is pointed at the source
-    to put the mirror plane back where the source has it. Returns how many
-    were copied.
+    The object is evaluated through the dependency graph, which applies all
+    of its modifiers in order, and the baked result is swapped in as obj's
+    mesh so no modifier is left to affect the preview.
     """
-    copied = 0
-    for modifier in source.modifiers:
-        if modifier.type != 'MIRROR':
-            continue
-        target = preview.modifiers.new(modifier.name, 'MIRROR')
-        for name in _MIRROR_COPY_PROPS:
-            _copy_prop(target, modifier, name)
-        if modifier.mirror_object is None:
-            target.mirror_object = source
-        else:
-            target.mirror_object = modifier.mirror_object
-        copied += 1
-    return copied
+    if not obj.modifiers:
+        return
+    depsgraph = bpy.context.evaluated_depsgraph_get()
+    evaluated = obj.evaluated_get(depsgraph)
+    baked = bpy.data.meshes.new_from_object(
+        evaluated, preserve_all_data_layers=False, depsgraph=depsgraph
+    )
+    old_mesh = obj.data
+    obj.data = baked
+    obj.modifiers.clear()
+    if old_mesh.users == 0:
+        bpy.data.meshes.remove(old_mesh)
+
+
+def _temp_object_with_modifiers(source):
+    """Copy source and bake all of its modifiers into a temporary object.
+
+    The copy keeps source's transform, so the flattened geometry lines up
+    with the original exactly. Callers must pass the result to
+    _remove_temp_object.
+    """
+    temp = source.copy()
+    temp.data = source.data.copy()
+    temp.name = source.name + PREVIEW_SUFFIX + "_temp"
+    for collection in source.users_collection:
+        collection.objects.link(temp)
+    if not source.users_collection:
+        bpy.context.scene.collection.objects.link(temp)
+    _apply_all_modifiers(temp)
+    return temp
+
+
+def _remove_temp_object(temp):
+    mesh = temp.data
+    bpy.data.objects.remove(temp, do_unlink=True)
+    if mesh.users == 0:
+        bpy.data.meshes.remove(mesh)
 
 
 def create_preview_object(source, size=AM_GRID_UNIT_SIZE,
                           include_degenerate=True, opacity=0.5):
     remove_preview_object(source)
-    mesh, bridges, caps, skipped, kept = build_preview_mesh(
-        source, size, include_degenerate
-    )
+    temp = _temp_object_with_modifiers(source)
+    try:
+        mesh, bridges, caps, skipped, kept = build_preview_mesh(
+            temp, size, include_degenerate, source.name + PREVIEW_SUFFIX
+        )
+    finally:
+        _remove_temp_object(temp)
     preview = bpy.data.objects.new(mesh.name, mesh)
     preview[PREVIEW_MARKER] = source.name
     material = _get_preview_material(source, opacity)
@@ -714,7 +713,6 @@ def create_preview_object(source, size=AM_GRID_UNIT_SIZE,
         collection.objects.link(preview)
     if not source.users_collection:
         bpy.context.scene.collection.objects.link(preview)
-    copy_mirror_modifiers(source, preview)
     return preview, bridges, caps, skipped, kept
 
 
