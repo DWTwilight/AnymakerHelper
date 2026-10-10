@@ -645,11 +645,11 @@ def export_vehicle(source, vehicle_id, output_dir, name="vehicle",
                    unit=AM_GRID_UNIT_SIZE):
     """Write <name>.meta and <name>.data, then label nodes and plates.
 
-    source may be a single mesh object or a collection; either way the
-    modifiers of every contributing object are baked into one combined mesh
-    first. Snapping to grid is then applied to that combined mesh, so the
-    exported nodes are on grid even when a modifier (such as Mirror) moved
-    geometry off the original vertices.
+    source may be a single mesh object or a collection. Snapping to grid runs
+    twice: once on each contributing object before its modifiers are baked, so
+    the source vertices are on grid going in, and once on the baked, combined
+    mesh, so the exported nodes are on grid going out even when a modifier
+    (such as Mirror) moved geometry off those vertices.
 
     Returns a dict describing the written files, the snap, and the node and
     plate counts of the combined mesh.
@@ -669,9 +669,12 @@ def export_vehicle(source, vehicle_id, output_dir, name="vehicle",
     meta_path = f"{base}.meta"
     data_path = f"{base}.data"
 
+    pre_moved, pre_merged, _, _ = snap_target_to_grid_points(source, unit)
     temp = _combined_temp_object(source)
     try:
-        moved, merged, _, _ = snap_to_grid_points(temp, unit)
+        post_moved, post_merged, _, _ = snap_to_grid_points(temp, unit)
+        moved = pre_moved + post_moved
+        merged = pre_merged + post_merged
         _write_json(meta_path, build_vehicle_meta(vehicle_id))
         _write_json(data_path, build_vehicle_data(temp, vehicle_id, unit))
         collection = create_labels(source, unit, temp)
@@ -833,18 +836,22 @@ def _preview_link_collections(target):
 
 def create_preview_object(target, size=AM_GRID_UNIT_SIZE,
                           include_degenerate=True, opacity=0.5):
-    """Build the preview mesh for target, snapping the combined mesh.
+    """Build the preview mesh for target, snapping before and after baking.
 
-    The combined mesh is generated first and then snapped, matching the
-    export path, so a modifier such as Mirror that moves geometry off the
-    original vertices still previews on grid. Returns (preview, moved,
-    merged, bridges, caps, skipped, kept, verts, edges), where verts and
-    edges are the node and edge counts of the combined, snapped mesh.
+    Snapping runs twice, matching the export path: once on each contributing
+    object before its modifiers are baked, and once on the baked, combined
+    mesh, so a modifier such as Mirror that moves geometry off the original
+    vertices still previews on grid. Returns (preview, moved, merged, bridges,
+    caps, skipped, kept, verts, edges), where verts and edges are the node and
+    edge counts of the combined, snapped mesh.
     """
     remove_preview_object(target)
+    pre_moved, pre_merged, _, _ = snap_target_to_grid_points(target, size)
     temp = _combined_temp_object(target)
     try:
-        moved, merged, _, _ = snap_to_grid_points(temp, size)
+        post_moved, post_merged, _, _ = snap_to_grid_points(temp, size)
+        moved = pre_moved + post_moved
+        merged = pre_merged + post_merged
         verts = len(temp.data.vertices)
         edges = len(temp.data.edges)
         mesh, bridges, caps, skipped, kept = build_preview_mesh(

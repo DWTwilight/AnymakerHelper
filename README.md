@@ -9,19 +9,22 @@ Requires Blender 4.5 LTS.
 ## Features
 
 - **In-game preview:** Rebuilds the mesh from cubes, edge bridges and plate
-  caps, so you can see the in-game result before you export. A Mirror
-  modifier is carried over, and the preview can refresh itself every time you
-  leave edit mode.
+  caps, so you can see the in-game result before you export. Every modifier
+  on the target is baked in first, and the preview can refresh itself every
+  time you leave edit mode.
 - **Double-sided faces:** Mark all edges of a face as seams to make it
   double-sided. The preview renders a flipped copy of its cap, and export
   writes a secondary plate, so it shows from both sides in game.
 - **Save file export:** Writes the `.meta` and `.data` JSON the game reads, plus
   in-scene labels naming every node and plate it exported.
+- **Object or collection targets:** A target is one mesh object or a collection
+  of mesh objects. A collection is baked and combined into a single vehicle,
+  so a model built from several meshes exports as one.
 - **Grid-based modeling:** Sets the viewport grid to the game's unit, so the
   mesh can be modeled on the same grid the game uses.
 - **Automatic cleanup:** Snaps vertices onto their grid points and merges any
   that share one, so no two nodes export to the same position. Preview and
-  export run the same cleanup first.
+  export run the same cleanup, before and after modifiers are baked.
 
 See [Usage](#usage) for more.
 
@@ -36,9 +39,10 @@ Enable **Anymaker Helper**. The panel appears in the 3D viewport sidebar
 
 ## Usage
 
-Every button that touches geometry works on the object in the panel's **Game
-Object** field, not on whatever happens to be selected. Set that field first.
-The three geometry buttons stay greyed out until it holds a mesh.
+Every button that touches geometry works on the target set in the panel, not
+on whatever happens to be selected. The target is either a single mesh
+(**Object**) or a collection of meshes (**Collection**). Set the target first.
+The three geometry buttons stay greyed out until it holds at least one mesh.
 
 | Button | What it does |
 | --- | --- |
@@ -62,16 +66,18 @@ with the game.
 **The general workflow:**
 
 1. Click `[Apply Grid Gap]` to adjust the grid settings.
-2. Set **Game Object** to the mesh you are modeling.
+2. Set the target: **Object** mode to the mesh you are modeling, or
+   **Collection** mode to a collection of meshes.
 3. Model the mesh. **Remember to enable `Snap (Grid)` to keep vertices on grid.**
 4. Click `[Generate Preview Mesh]` to see the in-game result.
 5. Once you are happy with the preview, click `[Export Save File]`.
 6. Move the exported files to `C:\Users\{yourUserName}\AppData\Roaming\Anymaker\creations\`(default Anymaker save dir) to test them in game.
 
-Both `[Generate Preview Mesh]` and `[Export Save File]` snap and merge grid
-points first, so a mesh that was never cleaned up still exports correctly.
-Both edit the mesh data, and both are undoable with <kbd>Ctrl</kbd>+<kbd>Z</kbd>.
-Undo cannot remove the files an export already wrote.
+Both `[Generate Preview Mesh]` and `[Export Save File]` snap the target to the
+grid, bake its modifiers, then snap the baked result again, so a mesh that was
+never cleaned up still previews and exports correctly. Both edit the mesh data,
+and both are undoable with <kbd>Ctrl</kbd>+<kbd>Z</kbd>. Undo cannot remove the
+files an export already wrote.
 
 ## Notes and limitations
 
@@ -82,8 +88,10 @@ Undo cannot remove the files an export already wrote.
 - Keep snapping to grid enabled while modeling. The snap and merge run on
   whatever the mesh happens to be, and vertices that were meant to be separate
   but land in the same cell are welded away.
-- Only one object is exported at a time. Multi-object vehicles are not
-  supported yet, and modifiers other than Mirror are ignored by the preview.
+- Only one target is exported at a time. A collection target is read one level
+  deep and only its mesh objects contribute: nested collections and non-mesh
+  objects are ignored, and all contributing meshes are combined into a single
+  vehicle.
 - The planarity test measures deviation from the centroid plane rather than a
   best-fit plane, so a badly warped face can pass. Try to avoid such
   circumstances.
