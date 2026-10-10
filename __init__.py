@@ -23,6 +23,7 @@ import bpy # type: ignore
 from bpy.app.handlers import persistent # type: ignore
 from bpy.props import ( # type: ignore
     BoolProperty,
+    EnumProperty,
     FloatProperty,
     IntProperty,
     PointerProperty,
@@ -32,8 +33,44 @@ from bpy.types import Operator, Panel, PropertyGroup # type: ignore
 from . import utils
 
 
-_EDIT_STATE = {"primed": False, "object": None, "mode": None}
+_EDIT_STATE = {"primed": False, "signature": None}
 _HIDDEN_PREVIEW = {"name": None}
+
+
+def _current_target(scene):
+    """Return the object or collection the panel currently targets."""
+    if scene.anymaker_target_type == 'COLLECTION':
+        return scene.anymaker_target_collection
+    return scene.anymaker_target
+
+
+def _target_ready(scene):
+    """Whether the current target can be converted or exported."""
+    target = _current_target(scene)
+    if target is None:
+        return False
+    if isinstance(target, bpy.types.Collection):
+        return bool(utils.iter_mesh_objects(target))
+    return target.type == 'MESH' and not utils.is_preview_object(target)
+
+
+def _editing_names(target):
+    """Names of the target's mesh objects currently in edit mode."""
+    return tuple(sorted(
+        obj.name for obj in utils.iter_mesh_objects(target)
+        if obj.mode == 'EDIT'
+    ))
+
+
+def _target_signature(target):
+    """Snapshot that changes whenever the target or its edit state changes."""
+    if target is None:
+        return (None, ())
+    return (target.name, _editing_names(target))
+
+
+def _target_changed(self, context):
+    _EDIT_STATE.update(primed=False, signature=None)
 
 
 def snap_note(moved, merged):
@@ -41,14 +78,6 @@ def snap_note(moved, merged):
     if not moved and not merged:
         return ""
     return f", {moved} vertices snapped, {merged} merged"
-
-
-def _mesh_object(name):
-    """Look up a mesh object by name, tolerating a stale or freed name."""
-    obj = bpy.data.objects.get(name) if name else None
-    if obj is None or obj.type != 'MESH':
-        return None
-    return obj
 
 
 def _hide_preview(obj):
@@ -81,19 +110,19 @@ def _defer(func, *args):
     bpy.app.timers.register(callback, first_interval=0.0)
 
 
-def _refresh_preview(scene, obj):
-    if obj.mode == 'EDIT':
+def _refresh_preview(scene, target):
+    if _editing_names(target):
         return
     settings = scene.anymaker_settings
-    moved, merged, preview, _, _, skipped, _ = utils.refresh_preview(
-        obj,
+    moved, merged, preview, _, _, skipped, _, _, _ = utils.refresh_preview(
+        target,
         settings.grid_unit_size,
         settings.include_degenerate_faces,
         settings.preview_opacity,
     )
     _restore_hidden_preview()
     print(f"Refresh Preview On Edit Mode: {preview.name} rebuilt from "
-          f"{obj.name} ({moved} vertices snapped, {merged} merged)")
+          f"{target.name} ({moved} vertices snapped, {merged} merged)")
     for indices in skipped:
         print(f"  non-planar face skipped: vertices {list(indices)}")
 
@@ -107,37 +136,33 @@ def _refresh_preview_setting_changed(self, context):
 def _anymaker_depsgraph_update(scene, depsgraph):
     """Hide the preview on entering edit mode, rebuild it on leaving.
 
-    Only the Game Object set in the add-on panel is watched, so editing any
-    other object leaves its preview alone. Object names are tracked instead of
-    references, since an object edited and deleted in one session leaves a
-    dangling reference behind.
+    Only the target set in the add-on panel is watched: for a single object
+    that is the object itself, and for a collection it is any of its mesh
+    objects. Names are tracked instead of references, since an object edited
+    and deleted in one session leaves a dangling reference behind.
     """
-    target = scene.anymaker_target
-    name = target.name if target is not None else None
-    mode = target.mode if target is not None else 'OBJECT'
+    target = _current_target(scene)
+    signature = _target_signature(target)
 
     state = _EDIT_STATE
     if not state["primed"]:
-        state.update(primed=True, object=name, mode=mode)
+        state.update(primed=True, signature=signature)
         return
-    if (name, mode) == (state["object"], state["mode"]):
+    if signature == state["signature"]:
         return
 
-    previous, previous_mode = state["object"], state["mode"]
-    state.update(object=name, mode=mode)
+    previous = state["signature"]
+    state["signature"] = signature
 
     if not scene.anymaker_settings.refresh_preview_on_edit:
         return
-    if mode == 'EDIT':
-        edited = _mesh_object(name)
-        if edited is not None:
-            _hide_preview(edited)
+    if target is None:
         return
-    if previous_mode != 'EDIT' or previous != name:
+    if signature[1] and not previous[1]:
+        _hide_preview(target)
         return
-    source = _mesh_object(previous)
-    if source is not None:
-        _defer(_refresh_preview, scene, source)
+    if previous[1] and not signature[1] and previous[0] == signature[0]:
+        _defer(_refresh_preview, scene, target)
 
 
 class AnymakerSettings(PropertyGroup):
@@ -165,8 +190,8 @@ class AnymakerSettings(PropertyGroup):
     )
     refresh_preview_on_edit: BoolProperty(
         name="Refresh Preview On Edit Mode",
-        description="Hide the preview mesh while the selected object is in "
-                    "edit mode, then rebuild it when leaving edit mode",
+        description="Hide the preview mesh while the target is in edit mode, "
+                    "then rebuild it when leaving edit mode",
         default=False,
         update=_refresh_preview_setting_changed,
     )
@@ -180,55 +205,49 @@ class ANYMAKER_OT_snap_to_grid_points(Operator):
 
     @classmethod
     def poll(cls, context):
-        obj = context.scene.anymaker_target
-        if obj is None or obj.type != 'MESH':
-            return False
-        return not utils.is_preview_object(obj)
+        return _target_ready(context.scene)
 
     def execute(self, context):
-        obj = context.scene.anymaker_target
+        target = _current_target(context.scene)
         unit = context.scene.anymaker_settings.grid_unit_size
-        moved, merged, edges, faces = utils.snap_to_grid_points(obj, unit)
-        verts = len(obj.data.vertices)
-        print(f"Snap To Grid Points: {obj.name} grid unit {unit} -> "
+        moved, merged, edges, faces = utils.snap_target_to_grid_points(
+            target, unit
+        )
+        verts = utils.target_counts(target)[0]
+        print(f"Snap To Grid Points: {target.name} grid unit {unit} -> "
               f"{moved} vertices snapped, {merged} merged, {edges} edges "
               f"and {faces} faces removed, {verts} vertices left")
         if not moved and not merged:
             self.report({'INFO'},
-                        f"{obj.name}: all {verts} vertices already on grid "
+                        f"{target.name}: all {verts} vertices already on grid "
                         f"points")
             return {'FINISHED'}
         self.report({'INFO'},
-                    f"{obj.name}: {moved} vertices snapped, {merged} merged "
+                    f"{target.name}: {moved} vertices snapped, {merged} merged "
                     f"({verts} left)")
         return {'FINISHED'}
 
 
 class ANYMAKER_OT_generate_preview(Operator):
-    """Generate Anymaker preview mesh from selected object"""
+    """Generate Anymaker preview mesh from the selected target"""
     bl_idname = "anymaker.generate_preview_mesh"
     bl_label = "Generate Preview Mesh"
     bl_options = {'REGISTER', 'UNDO'}
 
     @classmethod
     def poll(cls, context):
-        obj = context.scene.anymaker_target
-        if obj is None or obj.type != 'MESH':
-            return False
-        return not utils.is_preview_object(obj)
+        return _target_ready(context.scene)
 
     def execute(self, context):
-        obj = context.scene.anymaker_target
+        target = _current_target(context.scene)
         settings = context.scene.anymaker_settings
         size = settings.grid_unit_size
         degenerate = settings.include_degenerate_faces
         opacity = settings.preview_opacity
-        moved, merged, preview, bridges, caps, skipped, kept = (
-            utils.refresh_preview(obj, size, degenerate, opacity)
+        moved, merged, preview, bridges, caps, skipped, kept, verts, edges = (
+            utils.refresh_preview(target, size, degenerate, opacity)
         )
-        verts = len(obj.data.vertices)
-        edges = len(obj.data.edges)
-        print(f"Generate Preview Mesh: {obj.name} -> {preview.name} "
+        print(f"Generate Preview Mesh: {target.name} -> {preview.name} "
               f"({moved} vertices snapped, {merged} merged, "
               f"{verts} vertices, {edges} edges, {bridges} bridge faces, "
               f"{caps} caps, {kept} faces kept, grid unit {size}, "
@@ -271,7 +290,7 @@ class ANYMAKER_OT_apply_grid_gap(Operator):
 
 
 class ANYMAKER_OT_export_save(Operator):
-    """Export Anymaker vehicle save file from selected object"""
+    """Export Anymaker vehicle save file from the selected target"""
     bl_idname = "anymaker.export_save_file"
     bl_label = "Export Save File"
     bl_options = {'REGISTER', 'PRESET', 'UNDO'}
@@ -296,18 +315,14 @@ class ANYMAKER_OT_export_save(Operator):
 
     @classmethod
     def poll(cls, context):
-        obj = context.scene.anymaker_target
-        if obj is None or obj.type != 'MESH':
-            return False
-        return not utils.is_preview_object(obj)
+        return _target_ready(context.scene)
 
     def execute(self, context):
-        obj = context.scene.anymaker_target
+        target = _current_target(context.scene)
         unit = context.scene.anymaker_settings.grid_unit_size
-        moved, merged, _, _ = utils.snap_to_grid_points(obj, unit)
         try:
-            meta_path, data_path, collection = utils.export_vehicle(
-                obj,
+            result = utils.export_vehicle(
+                target,
                 self.vehicle_id,
                 self.output_dir,
                 self.vehicle_name,
@@ -317,30 +332,33 @@ class ANYMAKER_OT_export_save(Operator):
             self.report({'ERROR'}, f"Export failed: {error}")
             return {'CANCELLED'}
 
+        collection = result["collection"]
+        moved = result["moved"]
+        merged = result["merged"]
         count = len(collection.objects)
-        print(f"Export Save File: {obj.name} id={self.vehicle_id} "
-              f"-> {meta_path}, {data_path}, {count} labels in "
-              f"{collection.name}, {moved} vertices snapped, "
+        print(f"Export Save File: {target.name} id={self.vehicle_id} "
+              f"-> {result['meta_path']}, {result['data_path']}, {count} "
+              f"labels in {collection.name}, {moved} vertices snapped, "
               f"{merged} merged")
         self.report({'INFO'},
                     f"Exported {self.vehicle_name} "
-                    f"({len(obj.data.vertices)} nodes, "
-                    f"{len(obj.data.polygons)} plates, {count} labels)"
+                    f"({result['nodes']} nodes, "
+                    f"{result['plates']} plates, {count} labels)"
                     + snap_note(moved, merged))
         return {'FINISHED'}
 
     def invoke(self, context, event):
         # Set default values based on current selection and blend file
-        obj = context.scene.anymaker_target
-        if obj is None or obj.type != 'MESH' or utils.is_preview_object(obj):
+        target = _current_target(context.scene)
+        if target is None:
             # Try to pick an eligible mesh
             for candidate in context.selected_objects:
                 if candidate.type == 'MESH' and not utils.is_preview_object(candidate):
-                    obj = candidate
+                    target = candidate
                     break
-        if obj is not None:
+        if target is not None:
             if not self.vehicle_name:
-                self.vehicle_name = obj.name
+                self.vehicle_name = target.name
         if not self.output_dir:
             blend_path = bpy.data.filepath
             if blend_path:
@@ -362,7 +380,11 @@ class VIEW3D_PT_anymaker_helper(Panel):
         layout = self.layout
         scene = context.scene
 
-        layout.prop(scene, "anymaker_target", text="Game Object")
+        layout.prop(scene, "anymaker_target_type", expand=True)
+        if scene.anymaker_target_type == 'COLLECTION':
+            layout.prop(scene, "anymaker_target_collection", text="Collection")
+        else:
+            layout.prop(scene, "anymaker_target", text="Game Object")
 
         box = layout.box()
         box.use_property_split = True
@@ -394,7 +416,25 @@ def register():
     bpy.types.Scene.anymaker_target = PointerProperty(
         name="Anymaker Target",
         description="Select the game object to convert/export",
-        type=bpy.types.Object
+        type=bpy.types.Object,
+        update=_target_changed,
+    )
+    bpy.types.Scene.anymaker_target_collection = PointerProperty(
+        name="Anymaker Target Collection",
+        description="Select the collection of mesh objects to convert/export",
+        type=bpy.types.Collection,
+        update=_target_changed,
+    )
+    bpy.types.Scene.anymaker_target_type = EnumProperty(
+        name="Anymaker Target Type",
+        description="Whether the target is a single object or a collection",
+        items=[
+            ('OBJECT', "Object", "Convert a single mesh object"),
+            ('COLLECTION', "Collection",
+             "Convert every mesh object in a collection"),
+        ],
+        default='OBJECT',
+        update=_target_changed,
     )
     bpy.types.Scene.anymaker_settings = PointerProperty(
         name="Anymaker Settings",
@@ -410,8 +450,10 @@ def unregister():
     handlers = bpy.app.handlers.depsgraph_update_post
     if _anymaker_depsgraph_update in handlers:
         handlers.remove(_anymaker_depsgraph_update)
-    _EDIT_STATE.update(primed=False, object=None, mode=None)
+    _EDIT_STATE.update(primed=False, signature=None)
     del bpy.types.Scene.anymaker_settings
+    del bpy.types.Scene.anymaker_target_type
+    del bpy.types.Scene.anymaker_target_collection
     del bpy.types.Scene.anymaker_target
     for cls in reversed(classes):
         bpy.utils.unregister_class(cls)

@@ -121,6 +121,35 @@ def remove_preview_object(obj):
     return removed > 0
 
 
+def iter_mesh_objects(target):
+    """Yield the mesh objects a target contributes to the result.
+
+    A target is either a single mesh object or a collection; a collection is
+    read one level deep (its own objects, not nested collections). Preview
+    objects are never part of a target.
+    """
+    if isinstance(target, bpy.types.Collection):
+        candidates = list(target.objects)
+    elif isinstance(target, bpy.types.Object):
+        candidates = [target]
+    else:
+        return []
+    return [
+        obj for obj in candidates
+        if obj.type == 'MESH' and not is_preview_object(obj)
+    ]
+
+
+def target_counts(target):
+    """Return the total (vertices, edges, faces) over a target's meshes."""
+    verts = edges = faces = 0
+    for obj in iter_mesh_objects(target):
+        verts += len(obj.data.vertices)
+        edges += len(obj.data.edges)
+        faces += len(obj.data.polygons)
+    return verts, edges, faces
+
+
 def _append_cube(verts, faces, center, size):
     half = size * 0.5
     cx, cy, cz = center
@@ -467,6 +496,24 @@ def snap_to_grid_points(source, unit=AM_GRID_UNIT_SIZE):
     )
 
 
+def snap_target_to_grid_points(target, unit=AM_GRID_UNIT_SIZE):
+    """Snap every mesh object a target contributes, summing the results.
+
+    A single object target goes through one snap; a collection target snaps
+    each of its mesh objects independently.
+    """
+    moved = merged = edges = faces = 0
+    for obj in iter_mesh_objects(target):
+        obj_moved, obj_merged, obj_edges, obj_faces = snap_to_grid_points(
+            obj, unit
+        )
+        moved += obj_moved
+        merged += obj_merged
+        edges += obj_edges
+        faces += obj_faces
+    return moved, merged, edges, faces
+
+
 def build_vehicle_data(source, vehicle_id, unit=AM_GRID_UNIT_SIZE):
     positions = _node_positions(source, unit)
 
@@ -596,7 +643,17 @@ def create_labels(source, unit=AM_GRID_UNIT_SIZE, geometry=None):
 
 def export_vehicle(source, vehicle_id, output_dir, name="vehicle",
                    unit=AM_GRID_UNIT_SIZE):
-    """Write <name>.meta and <name>.data, then label nodes and plates."""
+    """Write <name>.meta and <name>.data, then label nodes and plates.
+
+    source may be a single mesh object or a collection; either way the
+    modifiers of every contributing object are baked into one combined mesh
+    first. Snapping to grid is then applied to that combined mesh, so the
+    exported nodes are on grid even when a modifier (such as Mirror) moved
+    geometry off the original vertices.
+
+    Returns a dict describing the written files, the snap, and the node and
+    plate counts of the combined mesh.
+    """
     directory = bpy.path.abspath(output_dir)
     if not directory:
         # Fall back to the current Blender file's directory
@@ -612,14 +669,25 @@ def export_vehicle(source, vehicle_id, output_dir, name="vehicle",
     meta_path = f"{base}.meta"
     data_path = f"{base}.data"
 
-    temp = _temp_object_with_modifiers(source)
+    temp = _combined_temp_object(source)
     try:
+        moved, merged, _, _ = snap_to_grid_points(temp, unit)
         _write_json(meta_path, build_vehicle_meta(vehicle_id))
         _write_json(data_path, build_vehicle_data(temp, vehicle_id, unit))
         collection = create_labels(source, unit, temp)
+        nodes = len(temp.data.vertices)
+        plates = len(temp.data.polygons)
     finally:
         _remove_temp_object(temp)
-    return meta_path, data_path, collection
+    return {
+        "meta_path": meta_path,
+        "data_path": data_path,
+        "collection": collection,
+        "moved": moved,
+        "merged": merged,
+        "nodes": nodes,
+        "plates": plates,
+    }
 
 
 def _get_preview_material(source, opacity):
@@ -674,16 +742,14 @@ def _temp_object_with_modifiers(source):
     """Copy source and bake all of its modifiers into a temporary object.
 
     The copy keeps source's transform, so the flattened geometry lines up
-    with the original exactly. Callers must pass the result to
-    _remove_temp_object.
+    with the original exactly. It is linked to the scene collection so the
+    dependency graph evaluates it even when source sits in an excluded
+    collection. Callers must pass the result to _remove_temp_object.
     """
     temp = source.copy()
     temp.data = source.data.copy()
     temp.name = source.name + PREVIEW_SUFFIX + "_temp"
-    for collection in source.users_collection:
-        collection.objects.link(temp)
-    if not source.users_collection:
-        bpy.context.scene.collection.objects.link(temp)
+    bpy.context.scene.collection.objects.link(temp)
     _apply_all_modifiers(temp)
     return temp
 
@@ -695,50 +761,129 @@ def _remove_temp_object(temp):
         bpy.data.meshes.remove(mesh)
 
 
-def create_preview_object(source, size=AM_GRID_UNIT_SIZE,
-                          include_degenerate=True, opacity=0.5):
-    remove_preview_object(source)
-    temp = _temp_object_with_modifiers(source)
+def _combined_temp_object(target):
+    """Build one temporary object holding target's final geometry.
+
+    A single object target is just that object copied with its modifiers
+    baked. A collection target bakes each of its mesh objects separately
+    and combines them into a single mesh in world space, so a collection
+    whose members carry different modifiers still yields one object to
+    build the preview or export from. Callers must pass the result to
+    _remove_temp_object.
+    """
+    if not isinstance(target, bpy.types.Collection):
+        return _temp_object_with_modifiers(target)
+
+    name = target.name + PREVIEW_SUFFIX + "_temp"
+    bm = bmesh.new()
     try:
+        for obj in iter_mesh_objects(target):
+            temp = _temp_object_with_modifiers(obj)
+            try:
+                temp.data.transform(temp.matrix_world)
+                bm.from_mesh(temp.data)
+            finally:
+                _remove_temp_object(temp)
+        mesh = bpy.data.meshes.new(name)
+        bm.to_mesh(mesh)
+    finally:
+        bm.free()
+    return bpy.data.objects.new(name, mesh)
+
+
+def _parent_collections(target):
+    """Return the collections that directly contain target, if known.
+
+    Collections do not expose their parents, so the scene hierarchy is
+    walked. The result may be empty when target is not linked anywhere.
+    """
+    parents = []
+    seen = set()
+
+    def walk(collection):
+        for child in collection.children:
+            if child == target:
+                if collection.name not in seen:
+                    seen.add(collection.name)
+                    parents.append(collection)
+            walk(child)
+
+    for scene in bpy.data.scenes:
+        walk(scene.collection)
+    for collection in bpy.data.collections:
+        walk(collection)
+    return parents
+
+
+def _preview_link_collections(target):
+    """Return the collections the preview object should be linked into.
+
+    A preview sits next to its source: an object preview joins the object's
+    own collections, while a collection preview joins the collection's
+    parent, i.e. the same level as the collection itself.
+    """
+    if isinstance(target, bpy.types.Collection):
+        collections = _parent_collections(target)
+    else:
+        collections = list(target.users_collection)
+    if not collections:
+        collections = [bpy.context.scene.collection]
+    return collections
+
+
+def create_preview_object(target, size=AM_GRID_UNIT_SIZE,
+                          include_degenerate=True, opacity=0.5):
+    """Build the preview mesh for target, snapping the combined mesh.
+
+    The combined mesh is generated first and then snapped, matching the
+    export path, so a modifier such as Mirror that moves geometry off the
+    original vertices still previews on grid. Returns (preview, moved,
+    merged, bridges, caps, skipped, kept, verts, edges), where verts and
+    edges are the node and edge counts of the combined, snapped mesh.
+    """
+    remove_preview_object(target)
+    temp = _combined_temp_object(target)
+    try:
+        moved, merged, _, _ = snap_to_grid_points(temp, size)
+        verts = len(temp.data.vertices)
+        edges = len(temp.data.edges)
         mesh, bridges, caps, skipped, kept = build_preview_mesh(
-            temp, size, include_degenerate, source.name + PREVIEW_SUFFIX
+            temp, size, include_degenerate, preview_name_for(target)
         )
     finally:
         _remove_temp_object(temp)
     preview = bpy.data.objects.new(mesh.name, mesh)
-    preview[PREVIEW_MARKER] = source.name
-    material = _get_preview_material(source, opacity)
+    preview[PREVIEW_MARKER] = target.name
+    material = _get_preview_material(target, opacity)
     mesh.materials.append(material)
-    for collection in source.users_collection:
+    for collection in _preview_link_collections(target):
         collection.objects.link(preview)
-    if not source.users_collection:
-        bpy.context.scene.collection.objects.link(preview)
-    return preview, bridges, caps, skipped, kept
+    return preview, moved, merged, bridges, caps, skipped, kept, verts, edges
 
 
-def set_preview_hidden(source, hidden):
-    """Hide or show the preview object generated for source.
+def set_preview_hidden(target, hidden):
+    """Hide or show the preview object generated for target.
 
-    Returns the preview object, or None when source has no preview, so a
+    Returns the preview object, or None when target has no preview, so a
     missing preview is never mistaken for a visibility change.
     """
-    preview = get_preview_object(source)
+    preview = get_preview_object(target)
     if preview is None:
         return None
     preview.hide_viewport = hidden
     return preview
 
 
-def refresh_preview(source, size=AM_GRID_UNIT_SIZE,
+def refresh_preview(target, size=AM_GRID_UNIT_SIZE,
                     include_degenerate=True, opacity=AM_PREVIEW_OPACITY):
-    """Snap to grid points, then rebuild the preview object.
+    """Rebuild the preview object from the combined, snapped mesh.
 
     Shared by the Generate Preview Mesh button and the edit mode watcher, so
-    both go through the same pipeline. Returns (moved, merged, preview,
-    bridges, caps, skipped, kept).
+    both go through the same pipeline as export. Works for a single object
+    or a collection target. Returns (moved, merged, preview, bridges, caps,
+    skipped, kept, verts, edges).
     """
-    moved, merged, _, _ = snap_to_grid_points(source, size)
-    preview, bridges, caps, skipped, kept = create_preview_object(
-        source, size, include_degenerate, opacity
-    )
-    return moved, merged, preview, bridges, caps, skipped, kept
+    (
+        preview, moved, merged, bridges, caps, skipped, kept, verts, edges
+    ) = create_preview_object(target, size, include_degenerate, opacity)
+    return moved, merged, preview, bridges, caps, skipped, kept, verts, edges
