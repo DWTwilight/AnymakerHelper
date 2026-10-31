@@ -804,7 +804,7 @@ def export_vehicle(source, vehicle_id, output_dir, name="vehicle",
     pre_moved, pre_merged, _, _ = snap_target_to_grid_points(
         source, unit, include_hidden
     )
-    temp = _combined_temp_object(source, include_hidden)
+    temp = _combined_temp_object(source, include_hidden, unit)
     try:
         post_moved, post_merged, _, _ = snap_to_grid_points(temp, unit)
         moved = pre_moved + post_moved
@@ -854,28 +854,68 @@ def _get_preview_material(source, opacity):
     return material
 
 
-def _apply_all_modifiers(obj):
+def _dissolve_planar_seam_edges(mesh, matrix, tolerance):
+    """Dissolve seam edges whose two faces form one planar face.
+
+    A mirror modifier can leave a seam where the mirrored half meets the
+    original. When the two faces on either side of such a seam lie on the
+    same plane, the seam no longer marks a real crease and the edge is
+    dissolved so the faces become one.
+    """
+    bm = bmesh.new()
+    try:
+        bm.from_mesh(mesh)
+        seams = []
+        for edge in bm.edges:
+            faces = edge.link_faces
+            if not edge.seam or len(faces) != 2:
+                continue
+            first, second = faces
+            first_points = [matrix @ vertex.co for vertex in first.verts]
+            second_points = [matrix @ vertex.co for vertex in second.verts]
+            first_normal = _polygon_normal(first_points)
+            second_normal = _polygon_normal(second_points)
+            if Vector(first_normal).dot(Vector(second_normal)) <= 0.0:
+                continue
+            planar, _ = is_planar(first_points + second_points, tolerance)
+            if planar:
+                seams.append(edge)
+        if seams:
+            bmesh.ops.dissolve_edges(
+                bm, edges=seams, use_verts=False, use_face_split=False
+            )
+            bm.to_mesh(mesh)
+            mesh.update()
+    finally:
+        bm.free()
+
+
+def _apply_all_modifiers(obj, unit=AM_GRID_UNIT_SIZE):
     """Bake every modifier on obj into its mesh data.
 
     The object is evaluated through the dependency graph, which applies all
     of its modifiers in order, and the baked result is swapped in as obj's
-    mesh so no modifier is left to affect the preview.
+    mesh so no modifier is left to affect the preview. Seams left by a
+    Mirror modifier are then cleaned up where they no longer separate
+    differently angled faces.
     """
-    if not obj.modifiers:
-        return
-    depsgraph = bpy.context.evaluated_depsgraph_get()
-    evaluated = obj.evaluated_get(depsgraph)
-    baked = bpy.data.meshes.new_from_object(
-        evaluated, preserve_all_data_layers=False, depsgraph=depsgraph
+    if obj.modifiers:
+        depsgraph = bpy.context.evaluated_depsgraph_get()
+        evaluated = obj.evaluated_get(depsgraph)
+        baked = bpy.data.meshes.new_from_object(
+            evaluated, preserve_all_data_layers=False, depsgraph=depsgraph
+        )
+        old_mesh = obj.data
+        obj.data = baked
+        obj.modifiers.clear()
+        if old_mesh.users == 0:
+            bpy.data.meshes.remove(old_mesh)
+    _dissolve_planar_seam_edges(
+        obj.data, obj.matrix_world, unit * AM_PLANAR_TOLERANCE_RATIO
     )
-    old_mesh = obj.data
-    obj.data = baked
-    obj.modifiers.clear()
-    if old_mesh.users == 0:
-        bpy.data.meshes.remove(old_mesh)
 
 
-def _temp_object_with_modifiers(source):
+def _temp_object_with_modifiers(source, unit=AM_GRID_UNIT_SIZE):
     """Copy source and bake all of its modifiers into a temporary object.
 
     The copy keeps source's transform, so the flattened geometry lines up
@@ -887,7 +927,7 @@ def _temp_object_with_modifiers(source):
     temp.data = source.data.copy()
     temp.name = source.name + PREVIEW_SUFFIX + "_temp"
     bpy.context.scene.collection.objects.link(temp)
-    _apply_all_modifiers(temp)
+    _apply_all_modifiers(temp, unit)
     return temp
 
 
@@ -898,7 +938,8 @@ def _remove_temp_object(temp):
         bpy.data.meshes.remove(mesh)
 
 
-def _combined_temp_object(target, include_hidden=True):
+def _combined_temp_object(target, include_hidden=True,
+                          unit=AM_GRID_UNIT_SIZE):
     """Build one temporary object holding target's final geometry.
 
     A single object target is just that object copied with its modifiers
@@ -910,13 +951,13 @@ def _combined_temp_object(target, include_hidden=True):
     _remove_temp_object.
     """
     if not isinstance(target, bpy.types.Collection):
-        return _temp_object_with_modifiers(target)
+        return _temp_object_with_modifiers(target, unit)
 
     name = target.name + PREVIEW_SUFFIX + "_temp"
     bm = bmesh.new()
     try:
         for obj in iter_mesh_objects(target, include_hidden):
-            temp = _temp_object_with_modifiers(obj)
+            temp = _temp_object_with_modifiers(obj, unit)
             try:
                 temp.data.transform(temp.matrix_world)
                 bm.from_mesh(temp.data)
@@ -986,7 +1027,7 @@ def create_preview_object(target, size=AM_GRID_UNIT_SIZE,
     pre_moved, pre_merged, _, _ = snap_target_to_grid_points(
         target, size, include_hidden
     )
-    temp = _combined_temp_object(target, include_hidden)
+    temp = _combined_temp_object(target, include_hidden, size)
     try:
         post_moved, post_merged, _, _ = snap_to_grid_points(temp, size)
         moved = pre_moved + post_moved

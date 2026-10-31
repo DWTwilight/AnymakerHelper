@@ -25,8 +25,9 @@ Requires Blender 4.5 LTS.
 - **Automatic cleanup:** Snaps vertices onto their grid points and merges any
   that share one, so no two nodes export to the same position. Edges are
   split where another vertex lies on them, and vertices that only continue a
-  straight edge are dissolved. Preview and export run the same cleanup, before
-  and after modifiers are baked.
+  straight edge are dissolved. Seams left by a Mirror modifier are dissolved
+  when the faces on either side are coplanar. Preview and export run the same
+  cleanup, before and after modifiers are baked.
 
 See [Usage](#usage) for more.
 
