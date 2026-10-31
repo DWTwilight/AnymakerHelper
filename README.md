@@ -23,8 +23,10 @@ Requires Blender 4.5 LTS.
 - **Grid-based modeling:** Sets the viewport grid to the game's unit, so the
   mesh can be modeled on the same grid the game uses.
 - **Automatic cleanup:** Snaps vertices onto their grid points and merges any
-  that share one, so no two nodes export to the same position. Preview and
-  export run the same cleanup, before and after modifiers are baked.
+  that share one, so no two nodes export to the same position. Edges are
+  split where another vertex lies on them, and vertices that only continue a
+  straight edge are dissolved. Preview and export run the same cleanup, before
+  and after modifiers are baked.
 
 See [Usage](#usage) for more.
 
@@ -47,7 +49,7 @@ The three geometry buttons stay greyed out until it holds at least one mesh.
 | Button | What it does |
 | --- | --- |
 | Apply Grid Gap | Sets the viewport grid spacing to the grid unit (8 cm by default) |
-| Snap To Grid Points | Moves every vertex onto its grid point and welds vertices that share one |
+| Snap To Grid Points | Moves every vertex onto its grid point, welds vertices that share one, splits edges at vertices lying on them and dissolves straight-line vertices |
 | Generate Preview Mesh | Creates or replaces the in-game preview mesh: `{name}_AM_preview` |
 | Export Save File | Writes `<name>.meta` and `<name>.data`; its dialog has an `Include Hidden Objects` option for collections |
 
@@ -75,8 +77,9 @@ with the game.
 6. Move the exported files to `C:\Users\{yourUserName}\AppData\Roaming\Anymaker\creations\`(default Anymaker save dir) to test them in game.
 
 Both `[Generate Preview Mesh]` and `[Export Save File]` snap the target to the
-grid, bake its modifiers, then snap the baked result again, so a mesh that was
-never cleaned up still previews and exports correctly. Both edit the mesh data,
+grid, split overlapping edges, dissolve straight-line vertices, bake its
+modifiers, then repeat on the baked result, so a mesh that was never cleaned up
+still previews and exports correctly. Both edit the mesh data,
 and both are undoable with <kbd>Ctrl</kbd>+<kbd>Z</kbd>. Undo cannot remove the
 files an export already wrote.
 

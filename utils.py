@@ -455,12 +455,132 @@ def _node_positions(source, unit=AM_GRID_UNIT_SIZE):
     ]
 
 
+def _split_edges_at_vertices(bm, matrix, epsilon):
+    """Split every edge that passes through another vertex.
+
+    A vertex sitting in the middle of an edge leaves a T-junction when the
+    shared position is welded. Splitting the edge there first makes both
+    sides share the vertex, so the weld can join them and no overlapping
+    edge is left behind. Returns how many splits were made.
+    """
+    verts = list(bm.verts)
+    if len(verts) < 3:
+        return 0
+    world = {vert: matrix @ vert.co for vert in verts}
+    splits = []
+
+    for edge in list(bm.edges):
+        start, end = edge.verts
+        start_pos = world[start]
+        end_pos = world[end]
+        axis = end_pos - start_pos
+        length_sq = axis.length_squared
+        if length_sq <= epsilon * epsilon:
+            continue
+        length = math.sqrt(length_sq)
+
+        hits = []
+        for vert in verts:
+            if vert is start or vert is end:
+                continue
+            point = world[vert]
+            if ((point - start_pos).length <= epsilon
+                    or (point - end_pos).length <= epsilon):
+                continue
+            factor = (point - start_pos).dot(axis) / length_sq
+            if factor <= 0.0 or factor >= 1.0:
+                continue
+            closest = start_pos + axis * factor
+            if (point - closest).length <= epsilon:
+                hits.append((factor, vert))
+
+        if not hits:
+            continue
+        hits.sort(key=lambda hit: hit[0])
+        unique = []
+        factor_epsilon = epsilon / length
+        for hit in hits:
+            if unique and abs(hit[0] - unique[-1][0]) <= factor_epsilon:
+                continue
+            unique.append(hit)
+        splits.append((edge, start, end, unique))
+
+    count = 0
+    for edge, start, end, hits in splits:
+        current_edge = edge
+        current_start = start
+        previous = 0.0
+        for factor, _ in hits:
+            step = (factor - previous) / (1.0 - previous)
+            if step <= 0.0 or step >= 1.0:
+                continue
+            new_edge, split_vert = bmesh.utils.edge_split(
+                current_edge, current_start, step
+            )
+            if end not in new_edge.verts:
+                for candidate in split_vert.link_edges:
+                    if end in candidate.verts:
+                        new_edge = candidate
+                        break
+                else:
+                    break
+            current_edge = new_edge
+            current_start = split_vert
+            previous = factor
+            count += 1
+    return count
+
+
+def _remove_collinear_vertices(bm, matrix, epsilon):
+    """Dissolve vertices whose two edges form one straight line.
+
+    Such a vertex adds nothing to the shape, so it is dissolved and its two
+    edges become one. Returns how many vertices were removed.
+    """
+    removed = 0
+    while True:
+        positions = {vert: matrix @ vert.co for vert in bm.verts}
+        candidates = []
+        for vert in bm.verts:
+            if len(vert.link_edges) != 2:
+                continue
+            first, second = vert.link_edges
+            before = first.other_vert(vert)
+            after = second.other_vert(vert)
+            if before is after:
+                continue
+            to_before = positions[before] - positions[vert]
+            to_after = positions[after] - positions[vert]
+            if (to_before.length <= epsilon
+                    or to_after.length <= epsilon):
+                continue
+            if to_before.dot(to_after) >= 0.0:
+                continue
+            axis = to_after - to_before
+            if axis.length <= epsilon:
+                continue
+            distance = to_before.cross(to_after).length / axis.length
+            if distance <= epsilon:
+                candidates.append(vert)
+
+        if not candidates:
+            break
+        before_verts = len(bm.verts)
+        bmesh.ops.dissolve_verts(bm, verts=candidates)
+        removed += before_verts - len(bm.verts)
+        if len(bm.verts) == before_verts:
+            break
+    return removed
+
+
 def snap_to_grid_points(source, unit=AM_GRID_UNIT_SIZE):
     """Snap every vertex onto its grid point, then merge shared ones.
 
     Snapping puts each vertex exactly on the grid cell the game reads, and
     merging welds the vertices that share a cell into one, so no node is
-    exported twice at the same position. Positions are compared in world
+    exported twice at the same position. Edges that passed through another
+    vertex are split there before the weld, and vertices that only continue
+    a straight edge are dissolved after it. Positions are compared in world
     space and written back through the object's matrix, so a rotated or
     scaled object snaps the same way an untransformed one does.
 
@@ -490,7 +610,9 @@ def snap_to_grid_points(source, unit=AM_GRID_UNIT_SIZE):
             moved += 1
         vert.co = to_local @ Vector(grid)
     bm.verts.ensure_lookup_table()
+    _split_edges_at_vertices(bm, matrix, epsilon)
     bmesh.ops.remove_doubles(bm, verts=bm.verts, dist=epsilon / scale)
+    _remove_collinear_vertices(bm, matrix, epsilon)
     bm.to_mesh(mesh)
     bm.free()
     mesh.update()
