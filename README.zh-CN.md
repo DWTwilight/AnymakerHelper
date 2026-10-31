@@ -43,7 +43,7 @@
 | Apply Grid Gap | 把视图网格间距设置为网格单位（默认 8 cm） |
 | Snap To Grid Points | 把每个顶点移动到其抓取点上，并合并共用同一抓取点的顶点 |
 | Generate Preview Mesh | 创建或替换游戏内预览网格：`{name}_AM_preview` |
-| Export Save File | 写出 `<name>.meta` 与 `<name>.data` |
+| Export Save File | 写出 `<name>.meta` 与 `<name>.data`；集合模式的弹窗中提供 `Include Hidden Objects` 选项 |
 
 ### 设置项
 
@@ -53,6 +53,7 @@
 | Include Degenerate Faces | 关闭 | 保留零面积的面（见下文） |
 | Preview Opacity | 1.0 | 预览网格材质的透明度 |
 | Refresh Preview On Edit Mode | 关闭 | 在编辑模式下隐藏预览，退出编辑模式时重建 |
+| Include Hidden In Preview | 关闭 | 生成集合预览网格时包含隐藏的物体 |
 
 建议保持 `[Grid Unit Size]` 的默认值，以便与游戏保持一致。
 

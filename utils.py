@@ -121,12 +121,18 @@ def remove_preview_object(obj):
     return removed > 0
 
 
-def iter_mesh_objects(target):
+def is_hidden_object(obj):
+    """Whether obj is hidden in the viewport, by itself or its collection."""
+    return obj.hide_viewport or obj.hide_get()
+
+
+def iter_mesh_objects(target, include_hidden=True):
     """Yield the mesh objects a target contributes to the result.
 
     A target is either a single mesh object or a collection; a collection is
     read one level deep (its own objects, not nested collections). Preview
-    objects are never part of a target.
+    objects are never part of a target. Hidden objects are skipped when
+    include_hidden is false.
     """
     if isinstance(target, bpy.types.Collection):
         candidates = list(target.objects)
@@ -137,6 +143,7 @@ def iter_mesh_objects(target):
     return [
         obj for obj in candidates
         if obj.type == 'MESH' and not is_preview_object(obj)
+        and (include_hidden or not is_hidden_object(obj))
     ]
 
 
@@ -496,14 +503,16 @@ def snap_to_grid_points(source, unit=AM_GRID_UNIT_SIZE):
     )
 
 
-def snap_target_to_grid_points(target, unit=AM_GRID_UNIT_SIZE):
+def snap_target_to_grid_points(target, unit=AM_GRID_UNIT_SIZE,
+                               include_hidden=True):
     """Snap every mesh object a target contributes, summing the results.
 
     A single object target goes through one snap; a collection target snaps
-    each of its mesh objects independently.
+    each of its mesh objects independently. Hidden objects are skipped when
+    include_hidden is false.
     """
     moved = merged = edges = faces = 0
-    for obj in iter_mesh_objects(target):
+    for obj in iter_mesh_objects(target, include_hidden):
         obj_moved, obj_merged, obj_edges, obj_faces = snap_to_grid_points(
             obj, unit
         )
@@ -642,10 +651,11 @@ def create_labels(source, unit=AM_GRID_UNIT_SIZE, geometry=None):
 
 
 def export_vehicle(source, vehicle_id, output_dir, name="vehicle",
-                   unit=AM_GRID_UNIT_SIZE):
+                   unit=AM_GRID_UNIT_SIZE, include_hidden=True):
     """Write <name>.meta and <name>.data, then label nodes and plates.
 
-    source may be a single mesh object or a collection. Snapping to grid runs
+    source may be a single mesh object or a collection. Hidden objects in a
+    collection are included when include_hidden is true. Snapping to grid runs
     twice: once on each contributing object before its modifiers are baked, so
     the source vertices are on grid going in, and once on the baked, combined
     mesh, so the exported nodes are on grid going out even when a modifier
@@ -669,8 +679,10 @@ def export_vehicle(source, vehicle_id, output_dir, name="vehicle",
     meta_path = f"{base}.meta"
     data_path = f"{base}.data"
 
-    pre_moved, pre_merged, _, _ = snap_target_to_grid_points(source, unit)
-    temp = _combined_temp_object(source)
+    pre_moved, pre_merged, _, _ = snap_target_to_grid_points(
+        source, unit, include_hidden
+    )
+    temp = _combined_temp_object(source, include_hidden)
     try:
         post_moved, post_merged, _, _ = snap_to_grid_points(temp, unit)
         moved = pre_moved + post_moved
@@ -764,14 +776,15 @@ def _remove_temp_object(temp):
         bpy.data.meshes.remove(mesh)
 
 
-def _combined_temp_object(target):
+def _combined_temp_object(target, include_hidden=True):
     """Build one temporary object holding target's final geometry.
 
     A single object target is just that object copied with its modifiers
     baked. A collection target bakes each of its mesh objects separately
     and combines them into a single mesh in world space, so a collection
     whose members carry different modifiers still yields one object to
-    build the preview or export from. Callers must pass the result to
+    build the preview or export from. Hidden objects are skipped when
+    include_hidden is false. Callers must pass the result to
     _remove_temp_object.
     """
     if not isinstance(target, bpy.types.Collection):
@@ -780,7 +793,7 @@ def _combined_temp_object(target):
     name = target.name + PREVIEW_SUFFIX + "_temp"
     bm = bmesh.new()
     try:
-        for obj in iter_mesh_objects(target):
+        for obj in iter_mesh_objects(target, include_hidden):
             temp = _temp_object_with_modifiers(obj)
             try:
                 temp.data.transform(temp.matrix_world)
@@ -835,19 +848,23 @@ def _preview_link_collections(target):
 
 
 def create_preview_object(target, size=AM_GRID_UNIT_SIZE,
-                          include_degenerate=True, opacity=0.5):
+                          include_degenerate=True, opacity=0.5,
+                          include_hidden=True):
     """Build the preview mesh for target, snapping before and after baking.
 
     Snapping runs twice, matching the export path: once on each contributing
     object before its modifiers are baked, and once on the baked, combined
     mesh, so a modifier such as Mirror that moves geometry off the original
-    vertices still previews on grid. Returns (preview, moved, merged, bridges,
-    caps, skipped, kept, verts, edges), where verts and edges are the node and
-    edge counts of the combined, snapped mesh.
+    vertices still previews on grid. Hidden objects in a collection are
+    skipped when include_hidden is false. Returns (preview, moved, merged,
+    bridges, caps, skipped, kept, verts, edges), where verts and edges are the
+    node and edge counts of the combined, snapped mesh.
     """
     remove_preview_object(target)
-    pre_moved, pre_merged, _, _ = snap_target_to_grid_points(target, size)
-    temp = _combined_temp_object(target)
+    pre_moved, pre_merged, _, _ = snap_target_to_grid_points(
+        target, size, include_hidden
+    )
+    temp = _combined_temp_object(target, include_hidden)
     try:
         post_moved, post_merged, _, _ = snap_to_grid_points(temp, size)
         moved = pre_moved + post_moved
@@ -882,15 +899,19 @@ def set_preview_hidden(target, hidden):
 
 
 def refresh_preview(target, size=AM_GRID_UNIT_SIZE,
-                    include_degenerate=True, opacity=AM_PREVIEW_OPACITY):
+                    include_degenerate=True, opacity=AM_PREVIEW_OPACITY,
+                    include_hidden=True):
     """Rebuild the preview object from the combined, snapped mesh.
 
     Shared by the Generate Preview Mesh button and the edit mode watcher, so
     both go through the same pipeline as export. Works for a single object
-    or a collection target. Returns (moved, merged, preview, bridges, caps,
+    or a collection target. Hidden objects in a collection are skipped when
+    include_hidden is false. Returns (moved, merged, preview, bridges, caps,
     skipped, kept, verts, edges).
     """
     (
         preview, moved, merged, bridges, caps, skipped, kept, verts, edges
-    ) = create_preview_object(target, size, include_degenerate, opacity)
+    ) = create_preview_object(
+        target, size, include_degenerate, opacity, include_hidden
+    )
     return moved, merged, preview, bridges, caps, skipped, kept, verts, edges

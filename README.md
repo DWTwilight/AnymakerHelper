@@ -49,7 +49,7 @@ The three geometry buttons stay greyed out until it holds at least one mesh.
 | Apply Grid Gap | Sets the viewport grid spacing to the grid unit (8 cm by default) |
 | Snap To Grid Points | Moves every vertex onto its grid point and welds vertices that share one |
 | Generate Preview Mesh | Creates or replaces the in-game preview mesh: `{name}_AM_preview` |
-| Export Save File | Writes `<name>.meta` and `<name>.data` |
+| Export Save File | Writes `<name>.meta` and `<name>.data`; its dialog has an `Include Hidden Objects` option for collections |
 
 ### Settings
 
@@ -59,6 +59,7 @@ The three geometry buttons stay greyed out until it holds at least one mesh.
 | Include Degenerate Faces | off | Keep zero-area faces (see below) |
 | Preview Opacity | 1.0 | Transparency of the preview mesh material |
 | Refresh Preview On Edit Mode | off | Hide the preview in edit mode, rebuild it on exit |
+| Include Hidden In Preview | off | Include hidden objects when generating a collection's preview mesh |
 
 It is recommended to keep the default `[Grid Unit Size]` setting so it aligns
 with the game.

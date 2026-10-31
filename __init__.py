@@ -44,13 +44,20 @@ def _current_target(scene):
     return scene.anymaker_target
 
 
-def _target_ready(scene):
+def _preview_include_hidden(scene):
+    """Whether hidden collection objects contribute to the preview mesh."""
+    if scene.anymaker_target_type != 'COLLECTION':
+        return True
+    return scene.anymaker_settings.preview_include_hidden
+
+
+def _target_ready(scene, include_hidden=True):
     """Whether the current target can be converted or exported."""
     target = _current_target(scene)
     if target is None:
         return False
     if isinstance(target, bpy.types.Collection):
-        return bool(utils.iter_mesh_objects(target))
+        return bool(utils.iter_mesh_objects(target, include_hidden))
     return target.type == 'MESH' and not utils.is_preview_object(target)
 
 
@@ -119,6 +126,7 @@ def _refresh_preview(scene, target):
         settings.grid_unit_size,
         settings.include_degenerate_faces,
         settings.preview_opacity,
+        _preview_include_hidden(scene),
     )
     _restore_hidden_preview()
     print(f"Refresh Preview On Edit Mode: {preview.name} rebuilt from "
@@ -195,6 +203,12 @@ class AnymakerSettings(PropertyGroup):
         default=False,
         update=_refresh_preview_setting_changed,
     )
+    preview_include_hidden: BoolProperty(
+        name="Include Hidden In Preview",
+        description="Include hidden objects when generating a collection's "
+                    "preview mesh",
+        default=False,
+    )
 
 
 class ANYMAKER_OT_snap_to_grid_points(Operator):
@@ -236,7 +250,9 @@ class ANYMAKER_OT_generate_preview(Operator):
 
     @classmethod
     def poll(cls, context):
-        return _target_ready(context.scene)
+        return _target_ready(
+            context.scene, _preview_include_hidden(context.scene)
+        )
 
     def execute(self, context):
         target = _current_target(context.scene)
@@ -244,8 +260,11 @@ class ANYMAKER_OT_generate_preview(Operator):
         size = settings.grid_unit_size
         degenerate = settings.include_degenerate_faces
         opacity = settings.preview_opacity
+        include_hidden = _preview_include_hidden(context.scene)
         moved, merged, preview, bridges, caps, skipped, kept, verts, edges = (
-            utils.refresh_preview(target, size, degenerate, opacity)
+            utils.refresh_preview(
+                target, size, degenerate, opacity, include_hidden
+            )
         )
         print(f"Generate Preview Mesh: {target.name} -> {preview.name} "
               f"({moved} vertices snapped, {merged} merged, "
@@ -312,6 +331,11 @@ class ANYMAKER_OT_export_save(Operator):
         subtype='DIR_PATH',
         default="",
     )
+    include_hidden: BoolProperty(
+        name="Include Hidden Objects",
+        description="Include hidden objects in the collection in the export",
+        default=True,
+    )
 
     @classmethod
     def poll(cls, context):
@@ -320,6 +344,12 @@ class ANYMAKER_OT_export_save(Operator):
     def execute(self, context):
         target = _current_target(context.scene)
         unit = context.scene.anymaker_settings.grid_unit_size
+        include_hidden = self.include_hidden
+        if not isinstance(target, bpy.types.Collection):
+            include_hidden = True
+        if not utils.iter_mesh_objects(target, include_hidden):
+            self.report({'ERROR'}, f"{target.name}: no mesh objects to export")
+            return {'CANCELLED'}
         try:
             result = utils.export_vehicle(
                 target,
@@ -327,6 +357,7 @@ class ANYMAKER_OT_export_save(Operator):
                 self.output_dir,
                 self.vehicle_name,
                 unit,
+                include_hidden,
             )
         except OSError as error:
             self.report({'ERROR'}, f"Export failed: {error}")
@@ -346,6 +377,14 @@ class ANYMAKER_OT_export_save(Operator):
                     f"{result['plates']} plates, {count} labels)"
                     + snap_note(moved, merged))
         return {'FINISHED'}
+
+    def draw(self, context):
+        layout = self.layout
+        layout.prop(self, "vehicle_id")
+        layout.prop(self, "vehicle_name")
+        layout.prop(self, "output_dir")
+        if context.scene.anymaker_target_type == 'COLLECTION':
+            layout.prop(self, "include_hidden")
 
     def invoke(self, context, event):
         # Set default values based on current selection and blend file
@@ -385,6 +424,12 @@ class VIEW3D_PT_anymaker_helper(Panel):
             layout.prop(scene, "anymaker_target_collection", text="Collection")
         else:
             layout.prop(scene, "anymaker_target", text="Game Object")
+
+        if scene.anymaker_target_type == 'COLLECTION':
+            hidden = layout.box()
+            hidden.label(text="Hidden Objects")
+            hidden.use_property_split = True
+            hidden.prop(scene.anymaker_settings, "preview_include_hidden")
 
         box = layout.box()
         box.use_property_split = True
