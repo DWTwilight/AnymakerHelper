@@ -12,7 +12,7 @@ Requires Blender 4.5 LTS.
   caps, so you can see the in-game result before you export. Every modifier
   on the target is baked in first, and the preview can refresh itself every
   time you leave edit mode.
-- **Double-sided faces:** Mark all edges of a face as seams to make it
+- **Double-sided faces:** Mark all edges of a face as sharp to make it
   double-sided. The preview renders a flipped copy of its cap, and export
   writes a secondary plate, so it shows from both sides in game.
 - **Save file export:** Writes the `.meta` and `.data` JSON the game reads, plus

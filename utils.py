@@ -246,18 +246,18 @@ def _quad_centroid(verts, quad):
 
 
 def _polygons_double_sided(source):
-    """Indices of polygons whose edges are all marked as seams."""
+    """Indices of polygons whose edges are all marked as sharp."""
     mesh = source.data
-    seam_edges = set()
+    sharp_edges = set()
     for edge in mesh.edges:
-        if edge.use_seam:
-            seam_edges.add(tuple(sorted(edge.vertices)))
+        if edge.use_edge_sharp:
+            sharp_edges.add(tuple(sorted(edge.vertices)))
     doubles = set()
     for polygon in mesh.polygons:
         verts = tuple(polygon.vertices)
         if verts and all(
-            tuple(sorted((verts[k], verts[(k + 1) % len(verts)]))) in seam_edges
-            for k in range(len(verts))
+            tuple(sorted((verts[k], verts[(k + 1) % len(verts)])))
+            in sharp_edges for k in range(len(verts))
         ):
             doubles.add(polygon.index)
     return doubles
@@ -266,7 +266,7 @@ def _polygons_double_sided(source):
 def _export_plate_loops(source):
     """Vertex loops in plate export order.
 
-    A plate whose edges are all marked as seams is exported twice, the
+    A plate whose edges are all marked as sharp is exported twice, the
     second copy wound the opposite way, so the game shows it from both
     sides.
     """
