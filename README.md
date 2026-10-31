@@ -15,6 +15,12 @@ Requires Blender 4.5 LTS.
 - **Double-sided faces:** Mark all edges of a face as sharp to make it
   double-sided. The preview renders a flipped copy of its cap, and export
   writes a secondary plate, so it shows from both sides in game.
+- **Windows:** Assign faces to the `AM_Window_MAT` material to mark them as
+  windows. The material is created automatically with 20% opacity, the preview
+  uses it for those faces, and export writes them with `"type": "window"`.
+  Targets with no material are given an `AM_Default_MAT` slot when entering or
+  leaving edit mode, so adding the window material does not turn the whole
+  object into a window.
 - **Save file export:** Writes the `.meta` and `.data` JSON the game reads, plus
   in-scene labels naming every node and plate it exported.
 - **Object or collection targets:** A target is one mesh object or a collection

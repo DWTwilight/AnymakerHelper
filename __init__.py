@@ -76,6 +76,21 @@ def _target_signature(target):
     return (target.name, _editing_names(target))
 
 
+def _ensure_window_material():
+    if hasattr(bpy.data, "materials"):
+        utils.ensure_window_material()
+
+
+def _ensure_scene_materials(scene):
+    """Create the shared materials and fill any missing first slots."""
+    if not hasattr(bpy.data, "materials"):
+        return
+    _ensure_window_material()
+    target = _current_target(scene)
+    if target is not None:
+        utils.ensure_target_materials(target)
+
+
 def _target_changed(self, context):
     _EDIT_STATE.update(primed=False, signature=None)
 
@@ -161,6 +176,10 @@ def _anymaker_depsgraph_update(scene, depsgraph):
 
     previous = state["signature"]
     state["signature"] = signature
+
+    if (signature[1] and not previous[1]) or (
+            previous[1] and not signature[1]):
+        _defer(_ensure_scene_materials, scene)
 
     if not scene.anymaker_settings.refresh_preview_on_edit:
         return
@@ -342,6 +361,7 @@ class ANYMAKER_OT_export_save(Operator):
         return _target_ready(context.scene)
 
     def execute(self, context):
+        _ensure_window_material()
         target = _current_target(context.scene)
         unit = context.scene.anymaker_settings.grid_unit_size
         include_hidden = self.include_hidden
@@ -456,6 +476,7 @@ classes = (
 
 
 def register():
+    _ensure_window_material()
     for cls in classes:
         bpy.utils.register_class(cls)
     bpy.types.Scene.anymaker_target = PointerProperty(

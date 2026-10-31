@@ -22,6 +22,9 @@ PREVIEW_MATERIAL_SUFFIX = "_AM_preview_mat"
 LABEL_COLLECTION_SUFFIX = "_AM_labels"
 AM_PLANAR_TOLERANCE_RATIO = 0.05
 AM_PREVIEW_OPACITY = 1.0
+AM_WINDOW_MATERIAL_NAME = "AM_Window_MAT"
+AM_WINDOW_OPACITY = 0.3
+AM_DEFAULT_MATERIAL_NAME = "AM_Default_MAT"
 GRID_EPSILON_RATIO = 0.001
 PREVIEW_MARKER = "anymaker_preview_of"
 LABEL_MARKER = "anymaker_label_for"
@@ -263,21 +266,48 @@ def _polygons_double_sided(source):
     return doubles
 
 
-def _export_plate_loops(source):
-    """Vertex loops in plate export order.
+def _is_window_material(material):
+    return material is not None and (
+        material.name == AM_WINDOW_MATERIAL_NAME
+        or material.name.startswith(AM_WINDOW_MATERIAL_NAME + ".")
+    )
+
+
+def _window_polygons(source):
+    """Indices of polygons assigned to the window material."""
+    slots = source.material_slots
+    windows = set()
+    for polygon in source.data.polygons:
+        index = polygon.material_index
+        if index >= len(slots):
+            continue
+        if _is_window_material(slots[index].material):
+            windows.add(polygon.index)
+    return windows
+
+
+def _export_plate_entries(source):
+    """Vertex loops in plate export order, with their window flag.
 
     A plate whose edges are all marked as sharp is exported twice, the
     second copy wound the opposite way, so the game shows it from both
-    sides.
+    sides. Both copies keep the source polygon's window flag.
     """
     doubles = _polygons_double_sided(source)
-    loops = []
+    windows = _window_polygons(source)
+    entries = []
     for polygon in source.data.polygons:
         loop = tuple(polygon.vertices)
-        loops.append(loop)
+        is_window = polygon.index in windows
+        entries.append((loop, is_window))
         if polygon.index in doubles:
-            loops.append(tuple(reversed(loop)))
-    return loops
+            entries.append((tuple(reversed(loop)), is_window))
+    return entries
+
+
+def _export_plate_loops(source):
+    """Vertex loops in plate export order."""
+    return [loop for loop, _ in _export_plate_entries(source)]
 
 
 def _append_face_caps(faces, source, centers, bases, tolerance):
@@ -285,11 +315,14 @@ def _append_face_caps(faces, source, centers, bases, tolerance):
 
     Each cap corner is the cube corner furthest along the face normal, so
     the cap keeps the original face's vertex order, edge count and normal.
-    Returns (caps_added, skipped_vertex_indices).
+    Returns (caps_added, skipped_vertex_indices, window_caps), where
+    window_caps has one flag per added cap, in the same order.
     """
     caps = 0
     skipped = []
+    window_caps = []
     doubles = _polygons_double_sided(source)
+    windows = _window_polygons(source)
     for polygon in source.data.polygons:
         indices = tuple(polygon.vertices)
         points = [tuple(centers[i]) for i in indices]
@@ -297,11 +330,13 @@ def _append_face_caps(faces, source, centers, bases, tolerance):
         if not planar:
             skipped.append(indices)
             continue
+        is_window = polygon.index in windows
         cap = []
         for vi in indices:
             corner = _farthest_corner(normal)
             cap.append(bases[vi] + corner)
         faces.append(tuple(cap))
+        window_caps.append(is_window)
         caps += 1
         if polygon.index in doubles:
             flip_corner_cap = []
@@ -310,8 +345,9 @@ def _append_face_caps(faces, source, centers, bases, tolerance):
                 corner = _farthest_corner(flipped)
                 flip_corner_cap.append(bases[vi] + corner)
             faces.append(tuple(reversed(flip_corner_cap)))
+            window_caps.append(is_window)
             caps += 1
-    return caps, skipped
+    return caps, skipped, window_caps
 
 
 def _outward_direction(verts, quad, origin, axis):
@@ -346,7 +382,8 @@ def _append_bridges(verts, faces, base_a, base_b, origin, axis,
 
 
 def build_preview_mesh(source, size=AM_GRID_UNIT_SIZE,
-                       include_degenerate=True, name=None):
+                       include_degenerate=True, name=None,
+                       preview_material=None, window_material=None):
     matrix = source.matrix_world
     verts = []
     faces = []
@@ -367,13 +404,28 @@ def build_preview_mesh(source, size=AM_GRID_UNIT_SIZE,
             center_a, axis, include_degenerate
         )
 
-    caps, skipped = _append_face_caps(
+    cap_start = len(faces)
+    caps, skipped, window_caps = _append_face_caps(
         faces, source, centers, bases,
         tolerance=size * AM_PLANAR_TOLERANCE_RATIO
     )
 
     mesh = bpy.data.meshes.new(name or (source.name + PREVIEW_SUFFIX))
+    has_windows = window_material is not None and any(window_caps)
+    if preview_material is not None:
+        mesh.materials.append(preview_material)
+    elif has_windows:
+        mesh.materials.append(None)
+    if has_windows:
+        mesh.materials.append(window_material)
+        window_index = len(mesh.materials) - 1
+    else:
+        window_index = None
     mesh.from_pydata(verts, [], faces)
+    if window_index is not None:
+        for offset, is_window in enumerate(window_caps):
+            if is_window:
+                mesh.polygons[cap_start + offset].material_index = window_index
     # validate() drops faces it considers invalid, which can include the
     # deliberate zero-area bridge quads, so report what the mesh really kept.
     mesh.validate(verbose=False)
@@ -661,14 +713,16 @@ def build_vehicle_data(source, vehicle_id, unit=AM_GRID_UNIT_SIZE):
     # Blender stores polygon loops counter-clockwise seen from the front
     # face. The game reads the opposite winding, so the loop is reversed
     # here to make the plate normal point outward.
-    plates = [
-        {
+    plates = []
+    for index, (loop, is_window) in enumerate(_export_plate_entries(source)):
+        plate = {
             "id": index + 1,
             "nodes": [vi + 1 for vi in reversed(loop)],
-            "glass_impacts": [],
         }
-        for index, loop in enumerate(_export_plate_loops(source))
-    ]
+        if is_window:
+            plate["type"] = "window"
+        plate["glass_impacts"] = []
+        plates.append(plate)
 
     vehicle = {
         "id": vehicle_id,
@@ -827,11 +881,7 @@ def export_vehicle(source, vehicle_id, output_dir, name="vehicle",
     }
 
 
-def _get_preview_material(source, opacity):
-    name = source.name + PREVIEW_MATERIAL_SUFFIX
-    material = bpy.data.materials.get(name)
-    if material is None:
-        material = bpy.data.materials.new(name)
+def _set_material_opacity(material, opacity):
     material.use_nodes = True
     material.diffuse_color = (0.8, 0.8, 0.8, opacity)
     if hasattr(material, "blend_method"):
@@ -854,13 +904,63 @@ def _get_preview_material(source, opacity):
     return material
 
 
+def _get_preview_material(source, opacity):
+    name = source.name + PREVIEW_MATERIAL_SUFFIX
+    material = bpy.data.materials.get(name)
+    if material is None:
+        material = bpy.data.materials.new(name)
+    return _set_material_opacity(material, opacity)
+
+
+def ensure_window_material():
+    """Return AM_Window_MAT, creating it with window opacity if missing."""
+    material = bpy.data.materials.get(AM_WINDOW_MATERIAL_NAME)
+    if material is None:
+        material = bpy.data.materials.new(AM_WINDOW_MATERIAL_NAME)
+    return _set_material_opacity(material, AM_WINDOW_OPACITY)
+
+
+def ensure_default_material():
+    """Return AM_Default_MAT, creating it if missing."""
+    material = bpy.data.materials.get(AM_DEFAULT_MATERIAL_NAME)
+    if material is None:
+        material = bpy.data.materials.new(AM_DEFAULT_MATERIAL_NAME)
+        material.diffuse_color = (0.8, 0.8, 0.8, 1.0)
+    return material
+
+
+def ensure_target_materials(target):
+    """Give every mesh object in target a material in its first slot.
+
+    Without a first material, the window material would take slot zero and
+    every face would inherit it, making the whole object look like glass.
+    """
+    added = 0
+    material = None
+    for obj in iter_mesh_objects(target, include_hidden=True):
+        slots = obj.material_slots
+        if slots and slots[0].material is not None:
+            continue
+        if material is None:
+            material = ensure_default_material()
+        if not slots:
+            obj.data.materials.append(material)
+        elif slots[0].link == 'OBJECT':
+            slots[0].material = material
+        else:
+            obj.data.materials[0] = material
+        added += 1
+    return added
+
+
 def _dissolve_planar_seam_edges(mesh, matrix, tolerance):
     """Dissolve seam edges whose two faces form one planar face.
 
     A mirror modifier can leave a seam where the mirrored half meets the
     original. When the two faces on either side of such a seam lie on the
     same plane, the seam no longer marks a real crease and the edge is
-    dissolved so the faces become one.
+    dissolved so the faces become one. Seams that also separate different
+    materials are kept, so material boundaries such as windows survive.
     """
     bm = bmesh.new()
     try:
@@ -871,6 +971,8 @@ def _dissolve_planar_seam_edges(mesh, matrix, tolerance):
             if not edge.seam or len(faces) != 2:
                 continue
             first, second = faces
+            if first.material_index != second.material_index:
+                continue
             first_points = [matrix @ vertex.co for vertex in first.verts]
             second_points = [matrix @ vertex.co for vertex in second.verts]
             first_normal = _polygon_normal(first_points)
@@ -902,9 +1004,13 @@ def _apply_all_modifiers(obj, unit=AM_GRID_UNIT_SIZE):
     if obj.modifiers:
         depsgraph = bpy.context.evaluated_depsgraph_get()
         evaluated = obj.evaluated_get(depsgraph)
+        materials = list(obj.data.materials)
         baked = bpy.data.meshes.new_from_object(
             evaluated, preserve_all_data_layers=False, depsgraph=depsgraph
         )
+        if not baked.materials:
+            for material in materials:
+                baked.materials.append(material)
         old_mesh = obj.data
         obj.data = baked
         obj.modifiers.clear()
@@ -954,17 +1060,44 @@ def _combined_temp_object(target, include_hidden=True,
         return _temp_object_with_modifiers(target, unit)
 
     name = target.name + PREVIEW_SUFFIX + "_temp"
+    combined_materials = []
+    material_indices = {}
+
+    def material_index(material):
+        key = material.as_pointer() if material else None
+        index = material_indices.get(key)
+        if index is None:
+            index = len(combined_materials)
+            material_indices[key] = index
+            combined_materials.append(material)
+        return index
+
     bm = bmesh.new()
     try:
         for obj in iter_mesh_objects(target, include_hidden):
             temp = _temp_object_with_modifiers(obj, unit)
             try:
+                remap = [
+                    material_index(slot.material)
+                    for slot in temp.material_slots
+                ]
+                fallback = None
+                for polygon in temp.data.polygons:
+                    index = polygon.material_index
+                    if index < len(remap):
+                        polygon.material_index = remap[index]
+                    else:
+                        if fallback is None:
+                            fallback = material_index(None)
+                        polygon.material_index = fallback
                 temp.data.transform(temp.matrix_world)
                 bm.from_mesh(temp.data)
             finally:
                 _remove_temp_object(temp)
         mesh = bpy.data.meshes.new(name)
         bm.to_mesh(mesh)
+        for material in combined_materials:
+            mesh.materials.append(material)
     finally:
         bm.free()
     return bpy.data.objects.new(name, mesh)
@@ -1034,15 +1167,16 @@ def create_preview_object(target, size=AM_GRID_UNIT_SIZE,
         merged = pre_merged + post_merged
         verts = len(temp.data.vertices)
         edges = len(temp.data.edges)
+        preview_material = _get_preview_material(target, opacity)
+        window_material = ensure_window_material()
         mesh, bridges, caps, skipped, kept = build_preview_mesh(
-            temp, size, include_degenerate, preview_name_for(target)
+            temp, size, include_degenerate, preview_name_for(target),
+            preview_material, window_material
         )
     finally:
         _remove_temp_object(temp)
     preview = bpy.data.objects.new(mesh.name, mesh)
     preview[PREVIEW_MARKER] = target.name
-    material = _get_preview_material(target, opacity)
-    mesh.materials.append(material)
     for collection in _preview_link_collections(target):
         collection.objects.link(preview)
     return preview, moved, merged, bridges, caps, skipped, kept, verts, edges
