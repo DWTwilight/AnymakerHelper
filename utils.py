@@ -953,6 +953,43 @@ def ensure_target_materials(target):
     return added
 
 
+def _faces_form_planar_face(first, second, matrix, tolerance):
+    """Whether two faces share one plane, regardless of their winding."""
+    first_points = [matrix @ vertex.co for vertex in first.verts]
+    second_points = [matrix @ vertex.co for vertex in second.verts]
+    normal = _polygon_normal(first_points)
+    length = math.sqrt(normal[0] ** 2 + normal[1] ** 2 + normal[2] ** 2)
+    if length < 1e-12:
+        normal = _polygon_normal(second_points)
+        length = math.sqrt(normal[0] ** 2 + normal[1] ** 2 + normal[2] ** 2)
+        if length < 1e-12:
+            return False
+    unit = (normal[0] / length, normal[1] / length, normal[2] / length)
+
+    centroid = [0.0, 0.0, 0.0]
+    for point in first_points:
+        centroid[0] += point[0]
+        centroid[1] += point[1]
+        centroid[2] += point[2]
+    count = len(first_points)
+    centroid = (centroid[0] / count, centroid[1] / count, centroid[2] / count)
+
+    for point in first_points + second_points:
+        offset = (
+            point[0] - centroid[0],
+            point[1] - centroid[1],
+            point[2] - centroid[2],
+        )
+        distance = abs(
+            offset[0] * unit[0]
+            + offset[1] * unit[1]
+            + offset[2] * unit[2]
+        )
+        if distance > tolerance:
+            return False
+    return True
+
+
 def _dissolve_planar_seam_edges(mesh, matrix, tolerance):
     """Dissolve seam edges whose two faces form one planar face.
 
@@ -973,14 +1010,7 @@ def _dissolve_planar_seam_edges(mesh, matrix, tolerance):
             first, second = faces
             if first.material_index != second.material_index:
                 continue
-            first_points = [matrix @ vertex.co for vertex in first.verts]
-            second_points = [matrix @ vertex.co for vertex in second.verts]
-            first_normal = _polygon_normal(first_points)
-            second_normal = _polygon_normal(second_points)
-            if Vector(first_normal).dot(Vector(second_normal)) <= 0.0:
-                continue
-            planar, _ = is_planar(first_points + second_points, tolerance)
-            if planar:
+            if _faces_form_planar_face(first, second, matrix, tolerance):
                 seams.append(edge)
         if seams:
             bmesh.ops.dissolve_edges(
