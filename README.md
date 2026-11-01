@@ -21,6 +21,12 @@ Requires Blender 4.5 LTS.
   Targets with no material are given an `AM_Default_MAT` slot when entering or
   leaving edit mode, so adding the window material does not turn the whole
   object into a window.
+- **Non-planar fan plates:** Mark every internal radial edge of a fan of
+  planar faces around one vertex as a seam. Full fans and partial sectors are
+  supported; the smallest is two faces sharing one seam edge. Preview keeps
+  the individual caps but omits the internal seam edges, and export writes one
+  non-planar plate whose nodes start at the fan center and then follow the
+  outer boundary. Mark all plate boundary edges sharp to make it double-sided.
 - **Save file export:** Writes the `.meta` and `.data` JSON the game reads, plus
   in-scene labels naming every node and plate it exported.
 - **Object or collection targets:** A target is one mesh object or a collection

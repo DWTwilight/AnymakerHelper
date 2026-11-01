@@ -60,6 +60,7 @@ _CUBE_EDGES = (
 )
 
 _MIN_QUAD_AREA = 1e-9
+_CORNER_TIE_EPSILON = 1e-6
 
 _CUBE_FACES = (
     (0, 3, 2, 1),
@@ -174,17 +175,92 @@ def _append_cube(verts, faces, center, size):
     return base
 
 
-def _farthest_corner(normal):
-    """Index into the cube's 8 corner verts for the corner furthest along
-    the given unit normal, measured from the cube center."""
-    best_index = 0
+def _farthest_corners(normal):
+    """Indices into the cube's 8 corners furthest along the given normal."""
     best_dot = None
+    best = []
     for index, (sx, sy, sz) in enumerate(_CUBE_CORNERS):
         dot = normal[0] * sx + normal[1] * sy + normal[2] * sz
-        if best_dot is None or dot > best_dot:
+        if best_dot is None or dot > best_dot + _CORNER_TIE_EPSILON:
             best_dot = dot
-            best_index = index
-    return best_index
+            best = [index]
+        elif abs(dot - best_dot) <= _CORNER_TIE_EPSILON:
+            best.append(index)
+    return best
+
+
+def _convex_hull_indices(point_indices, verts, normal):
+    """Return a convex outer boundary for the given vertex indices."""
+    if len(point_indices) < 3:
+        return None
+    direction = Vector(normal)
+    if direction.length < 1e-12:
+        return None
+    direction.normalize()
+    helper = Vector((1.0, 0.0, 0.0))
+    if abs(direction.x) > 0.9:
+        helper = Vector((0.0, 1.0, 0.0))
+    first_axis = direction.cross(helper)
+    if first_axis.length < 1e-12:
+        return None
+    first_axis.normalize()
+    second_axis = direction.cross(first_axis)
+
+    center = Vector((0.0, 0.0, 0.0))
+    for index in point_indices:
+        center += Vector(verts[index])
+    center /= len(point_indices)
+
+    coordinates = []
+    for index in point_indices:
+        offset = Vector(verts[index]) - center
+        coordinates.append((offset.dot(first_axis), offset.dot(second_axis)))
+
+    order = sorted(
+        range(len(point_indices)), key=lambda i: coordinates[i]
+    )
+
+    def turn(origin, first, second):
+        ax = coordinates[first][0] - coordinates[origin][0]
+        ay = coordinates[first][1] - coordinates[origin][1]
+        bx = coordinates[second][0] - coordinates[origin][0]
+        by = coordinates[second][1] - coordinates[origin][1]
+        return ax * by - ay * bx
+
+    def half(sequence):
+        hull = []
+        for index in sequence:
+            while (len(hull) >= 2
+                   and turn(hull[-2], hull[-1], index) <= 1e-12):
+                hull.pop()
+            hull.append(index)
+        return hull
+
+    lower = half(order)
+    upper = half(reversed(order))
+    hull = lower[:-1] + upper[:-1]
+    if len(hull) < 3:
+        return None
+    return [point_indices[index] for index in hull]
+
+
+def _cap_face_indices(indices, bases, verts, corner_normal, face_normal):
+    """Build one cap loop, merging tied farthest corners into a larger face."""
+    corners = _farthest_corners(corner_normal)
+    if len(corners) == 1:
+        corner = corners[0]
+        return tuple(bases[vi] + corner for vi in indices)
+
+    point_indices = [
+        bases[vi] + corner
+        for corner in corners
+        for vi in indices
+    ]
+    hull = _convex_hull_indices(point_indices, verts, face_normal)
+    if hull is not None:
+        return tuple(hull)
+    corner = corners[0]
+    return tuple(bases[vi] + corner for vi in indices)
 
 
 def _polygon_normal(points):
@@ -286,18 +362,37 @@ def _window_polygons(source):
     return windows
 
 
-def _export_plate_entries(source):
+def _export_plate_entries(source, fan_plates=None):
     """Vertex loops in plate export order, with their window flag.
 
     A plate whose edges are all marked as sharp is exported twice, the
     second copy wound the opposite way, so the game shows it from both
-    sides. Both copies keep the source polygon's window flag.
+    sides. Both copies keep the source polygon's window flag. Fan plates
+    replace their source sectors with one loop starting at the fan center,
+    or two loops when the fan itself is double-sided.
     """
     doubles = _polygons_double_sided(source)
     windows = _window_polygons(source)
+    fan_faces = set()
+    fan_by_first = {}
+    for plate in fan_plates or ():
+        faces = plate["faces"]
+        fan_faces.update(faces)
+        fan_by_first[faces[0]] = plate
+
     entries = []
     for polygon in source.data.polygons:
-        loop = tuple(polygon.vertices)
+        if polygon.index in fan_faces:
+            plate = fan_by_first.get(polygon.index)
+            if plate is not None:
+                center = plate["center"]
+                boundary = tuple(plate["boundary"])
+                loop = (center,) + tuple(reversed(boundary))
+                entries.append((loop, plate["is_window"]))
+                if plate.get("double_sided"):
+                    entries.append(((center,) + boundary, plate["is_window"]))
+            continue
+        loop = tuple(reversed(polygon.vertices))
         is_window = polygon.index in windows
         entries.append((loop, is_window))
         if polygon.index in doubles:
@@ -305,12 +400,13 @@ def _export_plate_entries(source):
     return entries
 
 
-def _export_plate_loops(source):
+def _export_plate_loops(source, fan_plates=None):
     """Vertex loops in plate export order."""
-    return [loop for loop, _ in _export_plate_entries(source)]
+    return [loop for loop, _ in _export_plate_entries(source, fan_plates)]
 
 
-def _append_face_caps(faces, source, centers, bases, tolerance):
+def _append_face_caps(faces, source, centers, bases, verts, tolerance,
+                      double_faces=None, single_faces=None):
     """Bridge the cubes of every planar face with a cap polygon.
 
     Each cap corner is the cube corner furthest along the face normal, so
@@ -322,6 +418,10 @@ def _append_face_caps(faces, source, centers, bases, tolerance):
     skipped = []
     window_caps = []
     doubles = _polygons_double_sided(source)
+    if double_faces:
+        doubles.update(double_faces)
+    if single_faces:
+        doubles.difference_update(single_faces)
     windows = _window_polygons(source)
     for polygon in source.data.polygons:
         indices = tuple(polygon.vertices)
@@ -331,19 +431,15 @@ def _append_face_caps(faces, source, centers, bases, tolerance):
             skipped.append(indices)
             continue
         is_window = polygon.index in windows
-        cap = []
-        for vi in indices:
-            corner = _farthest_corner(normal)
-            cap.append(bases[vi] + corner)
-        faces.append(tuple(cap))
+        cap = _cap_face_indices(indices, bases, verts, normal, normal)
+        faces.append(cap)
         window_caps.append(is_window)
         caps += 1
         if polygon.index in doubles:
-            flip_corner_cap = []
             flipped = (-normal[0], -normal[1], -normal[2])
-            for vi in indices:
-                corner = _farthest_corner(flipped)
-                flip_corner_cap.append(bases[vi] + corner)
+            flip_corner_cap = _cap_face_indices(
+                indices, bases, verts, flipped, normal
+            )
             faces.append(tuple(reversed(flip_corner_cap)))
             window_caps.append(is_window)
             caps += 1
@@ -383,7 +479,9 @@ def _append_bridges(verts, faces, base_a, base_b, origin, axis,
 
 def build_preview_mesh(source, size=AM_GRID_UNIT_SIZE,
                        include_degenerate=True, name=None,
-                       preview_material=None, window_material=None):
+                       preview_material=None, window_material=None,
+                       fan_edges=None, double_faces=None,
+                       single_faces=None):
     matrix = source.matrix_world
     verts = []
     faces = []
@@ -394,9 +492,12 @@ def build_preview_mesh(source, size=AM_GRID_UNIT_SIZE,
         centers.append(center)
         bases.append(_append_cube(verts, faces, center, size))
 
+    fan_edges = fan_edges or set()
     bridges = 0
     for edge in source.data.edges:
         va, vb = edge.vertices
+        if _edge_key(va, vb) in fan_edges:
+            continue
         center_a = centers[va]
         axis = centers[vb] - center_a
         bridges += _append_bridges(
@@ -406,8 +507,9 @@ def build_preview_mesh(source, size=AM_GRID_UNIT_SIZE,
 
     cap_start = len(faces)
     caps, skipped, window_caps = _append_face_caps(
-        faces, source, centers, bases,
-        tolerance=size * AM_PLANAR_TOLERANCE_RATIO
+        faces, source, centers, bases, verts,
+        tolerance=size * AM_PLANAR_TOLERANCE_RATIO,
+        double_faces=double_faces, single_faces=single_faces,
     )
 
     mesh = bpy.data.meshes.new(name or (source.name + PREVIEW_SUFFIX))
@@ -697,7 +799,8 @@ def snap_target_to_grid_points(target, unit=AM_GRID_UNIT_SIZE,
     return moved, merged, edges, faces
 
 
-def build_vehicle_data(source, vehicle_id, unit=AM_GRID_UNIT_SIZE):
+def build_vehicle_data(source, vehicle_id, unit=AM_GRID_UNIT_SIZE,
+                       fan_plates=None, fan_edges=None):
     positions = _node_positions(source, unit)
 
     nodes = [
@@ -705,19 +808,19 @@ def build_vehicle_data(source, vehicle_id, unit=AM_GRID_UNIT_SIZE):
         for index, pos in enumerate(positions)
     ]
 
+    fan_edges = fan_edges or set()
     edges = [
         {"n0": edge.vertices[0] + 1, "n1": edge.vertices[1] + 1}
         for edge in source.data.edges
+        if _edge_key(*edge.vertices) not in fan_edges
     ]
 
-    # Blender stores polygon loops counter-clockwise seen from the front
-    # face. The game reads the opposite winding, so the loop is reversed
-    # here to make the plate normal point outward.
     plates = []
-    for index, (loop, is_window) in enumerate(_export_plate_entries(source)):
+    for index, (loop, is_window) in enumerate(
+            _export_plate_entries(source, fan_plates)):
         plate = {
             "id": index + 1,
-            "nodes": [vi + 1 for vi in reversed(loop)],
+            "nodes": [vi + 1 for vi in loop],
         }
         if is_window:
             plate["type"] = "window"
@@ -788,7 +891,8 @@ def _add_label(collection, name, location, source):
     return obj
 
 
-def create_labels(source, unit=AM_GRID_UNIT_SIZE, geometry=None):
+def create_labels(source, unit=AM_GRID_UNIT_SIZE, geometry=None,
+                  fan_plates=None):
     """Create an in-scene empty labelled for every node and plate.
 
     All labels live in one collection named after the source, which is
@@ -811,7 +915,8 @@ def create_labels(source, unit=AM_GRID_UNIT_SIZE, geometry=None):
     for index, position in enumerate(positions):
         _add_label(collection, f"node-{index + 1}", position, source)
 
-    for index, loop in enumerate(_export_plate_loops(geometry)):
+    for index, loop in enumerate(
+            _export_plate_loops(geometry, fan_plates)):
         centres = [positions[vi] for vi in loop]
         if centres:
             count = len(centres)
@@ -863,11 +968,17 @@ def export_vehicle(source, vehicle_id, output_dir, name="vehicle",
         post_moved, post_merged, _, _ = snap_to_grid_points(temp, unit)
         moved = pre_moved + post_moved
         merged = pre_merged + post_merged
+        fan_plates, fan_edges = analyze_fan_plates(temp)
         _write_json(meta_path, build_vehicle_meta(vehicle_id))
-        _write_json(data_path, build_vehicle_data(temp, vehicle_id, unit))
-        collection = create_labels(source, unit, temp)
+        _write_json(
+            data_path,
+            build_vehicle_data(
+                temp, vehicle_id, unit, fan_plates, fan_edges
+            ),
+        )
+        collection = create_labels(source, unit, temp, fan_plates)
         nodes = len(temp.data.vertices)
-        plates = len(temp.data.polygons)
+        plates = len(_export_plate_entries(temp, fan_plates))
     finally:
         _remove_temp_object(temp)
     return {
@@ -1018,6 +1129,153 @@ def _dissolve_planar_seam_edges(mesh, matrix, tolerance):
             )
             bm.to_mesh(mesh)
             mesh.update()
+    finally:
+        bm.free()
+
+
+def _edge_key(a, b):
+    return (a, b) if a < b else (b, a)
+
+
+def _fan_boundary_loop(faces, center):
+    """Return (ordered boundary, double_sided), or None if invalid."""
+    edge_counts = {}
+    for face in faces:
+        for edge in face.edges:
+            edge_counts[edge] = edge_counts.get(edge, 0) + 1
+
+    boundary = []
+    for edge, count in edge_counts.items():
+        if count == 1:
+            boundary.append(edge)
+        elif count != 2 or not edge.seam:
+            return None
+    if len(boundary) < 3:
+        return None
+
+    adjacency = {}
+    for edge in boundary:
+        first, second = edge.verts
+        adjacency.setdefault(first, []).append(second)
+        adjacency.setdefault(second, []).append(first)
+    if any(len(neighbours) != 2 for neighbours in adjacency.values()):
+        return None
+
+    start = next(iter(adjacency))
+    loop = [start]
+    previous = None
+    current = start
+    while True:
+        neighbours = adjacency[current]
+        next_vert = (
+            neighbours[0] if neighbours[0] is not previous else neighbours[1]
+        )
+        if next_vert is start:
+            break
+        if next_vert in loop:
+            return None
+        loop.append(next_vert)
+        previous, current = current, next_vert
+        if len(loop) > len(adjacency):
+            return None
+    if len(loop) != len(adjacency):
+        return None
+
+    boundary_normal = _polygon_normal([vert.co for vert in loop])
+    normal_sum = [0.0, 0.0, 0.0]
+    for face in faces:
+        normal_sum[0] += face.normal[0]
+        normal_sum[1] += face.normal[1]
+        normal_sum[2] += face.normal[2]
+    if (boundary_normal[0] * normal_sum[0]
+            + boundary_normal[1] * normal_sum[1]
+            + boundary_normal[2] * normal_sum[2]) < 0.0:
+        loop.reverse()
+
+    if center in loop:
+        index = loop.index(center)
+        loop = loop[index:] + loop[:index]
+        loop = loop[1:]
+    if len(loop) < 3:
+        return None
+
+    double_sided = all(not edge.smooth for edge in boundary)
+    return loop, double_sided
+
+
+def analyze_fan_plates(source):
+    """Find non-planar fan plates from the remaining seam edges.
+
+    A fan plate is a contiguous full or partial fan of planar faces around
+    one seam-jointed central vertex; two faces sharing one seam edge is the
+    smallest valid fan. Returns (plates, internal_edges), where plates
+    describe the combined fan faces and internal_edges are the seam spokes
+    that must be omitted from output.
+    """
+    slots = source.material_slots
+    bm = bmesh.new()
+    try:
+        bm.from_mesh(source.data)
+        bm.verts.ensure_lookup_table()
+        bm.edges.ensure_lookup_table()
+        bm.faces.ensure_lookup_table()
+        bm.normal_update()
+        seams = {edge for edge in bm.edges if edge.seam}
+        plates = []
+        internal_edges = set()
+
+        while seams:
+            counts = {}
+            for edge in seams:
+                for vert in edge.verts:
+                    counts[vert] = counts.get(vert, 0) + 1
+            ordered = sorted(
+                counts.items(), key=lambda item: item[1], reverse=True
+            )
+
+            found = None
+            for center, count in ordered:
+                if count < 1:
+                    break
+                fan_faces = set()
+                for edge in center.link_edges:
+                    if edge in seams:
+                        fan_faces.update(edge.link_faces)
+                if len(fan_faces) < 2:
+                    continue
+                boundary_result = _fan_boundary_loop(fan_faces, center)
+                if boundary_result is None:
+                    continue
+                boundary, double_sided = boundary_result
+                found = (center, fan_faces, boundary, double_sided)
+                break
+
+            if found is None:
+                break
+
+            center, fan_faces, boundary, double_sided = found
+            spokes = [edge for edge in center.link_edges if edge in seams]
+            for edge in spokes:
+                seams.discard(edge)
+                internal_edges.add(_edge_key(
+                    edge.verts[0].index, edge.verts[1].index
+                ))
+
+            faces = tuple(sorted(face.index for face in fan_faces))
+            is_window = any(
+                face.material_index < len(slots)
+                and _is_window_material(slots[face.material_index].material)
+                for face in fan_faces
+            )
+            plates.append({
+                "faces": faces,
+                "center": center.index,
+                "boundary": tuple(vert.index for vert in boundary),
+                "is_window": is_window,
+                "double_sided": double_sided,
+            })
+
+        return plates, internal_edges
     finally:
         bm.free()
 
@@ -1197,11 +1455,20 @@ def create_preview_object(target, size=AM_GRID_UNIT_SIZE,
         merged = pre_merged + post_merged
         verts = len(temp.data.vertices)
         edges = len(temp.data.edges)
+        fan_plates, fan_edges = analyze_fan_plates(temp)
+        fan_double_faces = set()
+        fan_single_faces = set()
+        for plate in fan_plates:
+            if plate["double_sided"]:
+                fan_double_faces.update(plate["faces"])
+            else:
+                fan_single_faces.update(plate["faces"])
         preview_material = _get_preview_material(target, opacity)
         window_material = ensure_window_material()
         mesh, bridges, caps, skipped, kept = build_preview_mesh(
             temp, size, include_degenerate, preview_name_for(target),
-            preview_material, window_material
+            preview_material, window_material, fan_edges,
+            fan_double_faces, fan_single_faces
         )
     finally:
         _remove_temp_object(temp)
