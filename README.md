@@ -29,8 +29,8 @@ Requires Blender 4.5 LTS.
   outer boundary. Mark all plate boundary edges sharp to make it double-sided.
 - **Manual quad centers:** Each preview creates a `{target}_Quad_Centers`
   collection with movable empty tags for two-face non-planar quads. Move a tag
-  to either seam endpoint to choose the exported center; invalid tags are
-  removed and missing tags are recreated on the next preview.
+  to either seam endpoint to choose the exported center; unmatched tags are
+  kept and missing tags are recreated on the next preview.
 - **Save file export:** Writes the `.meta` and `.data` JSON the game reads, plus
   in-scene labels naming every node and plate it exported.
 - **Object or collection targets:** A target is one mesh object or a collection
@@ -68,6 +68,7 @@ The three geometry buttons stay greyed out until it holds at least one mesh.
 | Apply Grid Gap | Sets the viewport grid spacing to the grid unit (8 cm by default) |
 | Snap To Grid Points | Moves every vertex onto its grid point, welds vertices that share one, splits edges at vertices lying on them and dissolves straight-line vertices |
 | Generate Preview Mesh | Creates or replaces the in-game preview mesh: `{name}_AM_preview` |
+| Flip Quad Center Tag | Moves the selected quad center tag(s) to the other seam endpoint |
 | Export Save File | Writes `<name>.meta` and `<name>.data`; its dialog has an `Include Hidden Objects` option for collections |
 
 ### Settings

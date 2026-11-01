@@ -31,6 +31,7 @@ LABEL_MARKER = "anymaker_label_for"
 QUAD_CENTER_COLLECTION_SUFFIX = "_Quad_Centers"
 QUAD_CENTER_MARKER = "anymaker_quad_center"
 QUAD_CENTER_KEY = "anymaker_quad_center_key"
+QUAD_CENTER_ENDPOINTS = "anymaker_quad_center_endpoints"
 QUAD_CENTER_COLLECTION_MARKER = "anymaker_quad_centers"
 QUAD_CENTER_TOLERANCE_RATIO = 0.5
 
@@ -1360,7 +1361,13 @@ def _tag_endpoint_index(tag, points, tolerance):
     return best_index
 
 
-def _create_quad_center_tag(collection, location, key, unit):
+def _store_quad_endpoints(tag, endpoints):
+    tag[QUAD_CENTER_ENDPOINTS] = [
+        component for point in endpoints for component in point
+    ]
+
+
+def _create_quad_center_tag(collection, location, key, unit, endpoints):
     tag = bpy.data.objects.new("quad-center", None)
     tag.empty_display_type = 'PLAIN_AXES'
     tag.empty_display_size = unit * 0.5
@@ -1369,8 +1376,25 @@ def _create_quad_center_tag(collection, location, key, unit):
     tag.location = location
     tag[QUAD_CENTER_MARKER] = True
     tag[QUAD_CENTER_KEY] = key
+    _store_quad_endpoints(tag, endpoints)
     collection.objects.link(tag)
     return tag
+
+
+def flip_quad_center_tag(tag, unit):
+    """Move a quad center tag to the other seam endpoint. Returns success."""
+    stored = tag.get(QUAD_CENTER_ENDPOINTS)
+    if stored is None or len(stored) != 6:
+        return False
+    endpoints = [Vector(stored[0:3]), Vector(stored[3:6])]
+
+    tolerance = unit * QUAD_CENTER_TOLERANCE_RATIO
+    distances = [(tag.location - point).length for point in endpoints]
+    nearest = 0 if distances[0] <= distances[1] else 1
+    if distances[nearest] > tolerance:
+        return False
+    tag.location = endpoints[1 - nearest]
+    return True
 
 
 def _quad_center_tags(collection):
@@ -1410,17 +1434,21 @@ def update_quad_center_tags(target, source, fan_plates, unit):
         quad = quads.get(key)
         if (quad is None
                 or _tag_endpoint_index(tag, quad[0], tolerance) is None):
-            bpy.data.objects.remove(tag, do_unlink=True)
             continue
         if key in seen:
             bpy.data.objects.remove(tag, do_unlink=True)
             continue
         seen.add(key)
+        stored = tag.get(QUAD_CENTER_ENDPOINTS)
+        if stored is None or len(stored) != 6:
+            _store_quad_endpoints(tag, quad[0])
 
-    for key, (_, default_point) in quads.items():
+    for key, (points, default_point) in quads.items():
         if key in seen:
             continue
-        _create_quad_center_tag(collection, default_point, key, unit)
+        _create_quad_center_tag(
+            collection, default_point, key, unit, points
+        )
 
 
 def apply_quad_center_tags(target, source, fan_plates, unit):

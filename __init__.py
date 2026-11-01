@@ -307,6 +307,36 @@ class ANYMAKER_OT_generate_preview(Operator):
         return {'FINISHED'}
 
 
+class ANYMAKER_OT_flip_quad_center_tag(Operator):
+    """Move selected quad center tags to the other seam endpoint"""
+    bl_idname = "anymaker.flip_quad_center_tag"
+    bl_label = "Flip Quad Center Tag"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        return any(
+            obj.get(utils.QUAD_CENTER_MARKER)
+            for obj in context.selected_objects
+        )
+
+    def execute(self, context):
+        unit = context.scene.anymaker_settings.grid_unit_size
+        flipped = 0
+        for obj in context.selected_objects:
+            if not obj.get(utils.QUAD_CENTER_MARKER):
+                continue
+            if utils.flip_quad_center_tag(obj, unit):
+                flipped += 1
+        if not flipped:
+            self.report(
+                {'WARNING'}, "No selected quad center tag could be flipped"
+            )
+            return {'CANCELLED'}
+        self.report({'INFO'}, f"Flipped {flipped} quad center tag(s)")
+        return {'FINISHED'}
+
+
 class ANYMAKER_OT_apply_grid_gap(Operator):
     """Set the viewport grid gap to the Anymaker vertex cube size"""
     bl_idname = "anymaker.apply_grid_gap"
@@ -462,6 +492,8 @@ class VIEW3D_PT_anymaker_helper(Panel):
         layout.operator("anymaker.snap_to_grid_points", icon='SNAP_VERTEX')
         layout.operator("anymaker.generate_preview_mesh",
                         icon='MESH_CUBE')
+        layout.operator("anymaker.flip_quad_center_tag",
+                        icon='ARROW_LEFTRIGHT')
         layout.operator("anymaker.export_save_file", icon='EXPORT')
 
 
@@ -469,6 +501,7 @@ classes = (
     AnymakerSettings,
     ANYMAKER_OT_snap_to_grid_points,
     ANYMAKER_OT_generate_preview,
+    ANYMAKER_OT_flip_quad_center_tag,
     ANYMAKER_OT_apply_grid_gap,
     ANYMAKER_OT_export_save,
     VIEW3D_PT_anymaker_helper,
