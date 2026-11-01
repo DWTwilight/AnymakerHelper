@@ -28,6 +28,11 @@ AM_DEFAULT_MATERIAL_NAME = "AM_Default_MAT"
 GRID_EPSILON_RATIO = 0.001
 PREVIEW_MARKER = "anymaker_preview_of"
 LABEL_MARKER = "anymaker_label_for"
+QUAD_CENTER_COLLECTION_SUFFIX = "_Quad_Centers"
+QUAD_CENTER_MARKER = "anymaker_quad_center"
+QUAD_CENTER_KEY = "anymaker_quad_center_key"
+QUAD_CENTER_COLLECTION_MARKER = "anymaker_quad_centers"
+QUAD_CENTER_TOLERANCE_RATIO = 0.5
 
 _IDENTITY_TRANSFORM = {
     "m": [0, 0, 0, 0, 0, 0, 0, 0, 0],
@@ -390,7 +395,16 @@ def _export_plate_entries(source, fan_plates=None):
                 loop = (center,) + tuple(reversed(boundary))
                 entries.append((loop, plate["is_window"]))
                 if plate.get("double_sided"):
-                    entries.append(((center,) + boundary, plate["is_window"]))
+                    back_center = plate.get("back_center")
+                    blender_loop = (center,) + boundary
+                    if back_center is not None and back_center in blender_loop:
+                        index = blender_loop.index(back_center)
+                        back_loop = (
+                            blender_loop[index:] + blender_loop[:index]
+                        )
+                    else:
+                        back_loop = blender_loop
+                    entries.append((back_loop, plate["is_window"]))
             continue
         loop = tuple(reversed(polygon.vertices))
         is_window = polygon.index in windows
@@ -969,6 +983,7 @@ def export_vehicle(source, vehicle_id, output_dir, name="vehicle",
         moved = pre_moved + post_moved
         merged = pre_merged + post_merged
         fan_plates, fan_edges = analyze_fan_plates(temp)
+        fan_plates = apply_quad_center_tags(source, temp, fan_plates, unit)
         _write_json(meta_path, build_vehicle_meta(vehicle_id))
         _write_json(
             data_path,
@@ -1267,17 +1282,194 @@ def analyze_fan_plates(source):
                 and _is_window_material(slots[face.material_index].material)
                 for face in fan_faces
             )
+            back_center = None
+            if len(fan_faces) == 2:
+                first, second = tuple(fan_faces)
+                second_edges = set(second.edges)
+                seam_edge = next(
+                    (edge for edge in first.edges
+                     if edge in second_edges and edge.seam),
+                    None,
+                )
+                if seam_edge is not None:
+                    opposite = seam_edge.other_vert(center)
+                    if opposite is not None:
+                        back_center = opposite.index
             plates.append({
                 "faces": faces,
                 "center": center.index,
                 "boundary": tuple(vert.index for vert in boundary),
                 "is_window": is_window,
                 "double_sided": double_sided,
+                "back_center": back_center,
             })
 
         return plates, internal_edges
     finally:
         bm.free()
+
+
+def _quad_center_parent(target):
+    if isinstance(target, bpy.types.Collection):
+        return target
+    collections = list(target.users_collection)
+    if collections:
+        return collections[0]
+    return bpy.context.scene.collection
+
+
+def _find_quad_center_collection(target):
+    parent = _quad_center_parent(target)
+    name = target.name + QUAD_CENTER_COLLECTION_SUFFIX
+    for child in parent.children:
+        if (child.get(QUAD_CENTER_COLLECTION_MARKER)
+                or child.name == name
+                or child.name.startswith(name + ".")):
+            return child
+    return None
+
+
+def _ensure_quad_center_collection(target):
+    collection = _find_quad_center_collection(target)
+    if collection is None:
+        collection = bpy.data.collections.new(
+            target.name + QUAD_CENTER_COLLECTION_SUFFIX
+        )
+        _quad_center_parent(target).children.link(collection)
+        collection[QUAD_CENTER_COLLECTION_MARKER] = True
+    return collection
+
+
+def _quad_key(points, unit):
+    cells = sorted(
+        tuple(to_grid_coords(point, unit)) for point in points
+    )
+    return "|".join(
+        ",".join(str(value) for value in cell) for cell in cells
+    )
+
+
+def _tag_endpoint_index(tag, points, tolerance):
+    best_index = None
+    best_distance = tolerance
+    for index, point in enumerate(points):
+        distance = (tag.location - point).length
+        if distance <= best_distance:
+            best_distance = distance
+            best_index = index
+    return best_index
+
+
+def _create_quad_center_tag(collection, location, key, unit):
+    tag = bpy.data.objects.new("quad-center", None)
+    tag.empty_display_type = 'PLAIN_AXES'
+    tag.empty_display_size = unit * 0.5
+    tag.show_name = True
+    tag.show_in_front = True
+    tag.location = location
+    tag[QUAD_CENTER_MARKER] = True
+    tag[QUAD_CENTER_KEY] = key
+    collection.objects.link(tag)
+    return tag
+
+
+def _quad_center_tags(collection):
+    return [
+        obj for obj in collection.objects
+        if obj.get(QUAD_CENTER_MARKER)
+    ]
+
+
+def update_quad_center_tags(target, source, fan_plates, unit):
+    """Reconcile manual quad-center tags with the current non-planar quads."""
+    matrix = source.matrix_world
+    quads = {}
+    for plate in fan_plates:
+        back_center = plate.get("back_center")
+        if len(plate["faces"]) != 2 or back_center is None:
+            continue
+        points = [
+            matrix @ source.data.vertices[index].co
+            for index in (plate["center"], back_center)
+        ]
+        key = _quad_key(points, unit)
+        quads[key] = (points, points[0])
+
+    collection = _find_quad_center_collection(target)
+    if collection is None:
+        if not quads:
+            return
+        collection = _ensure_quad_center_collection(target)
+
+    tolerance = unit * QUAD_CENTER_TOLERANCE_RATIO
+    seen = set()
+    for tag in list(collection.objects):
+        if not tag.get(QUAD_CENTER_MARKER):
+            continue
+        key = tag.get(QUAD_CENTER_KEY)
+        quad = quads.get(key)
+        if (quad is None
+                or _tag_endpoint_index(tag, quad[0], tolerance) is None):
+            bpy.data.objects.remove(tag, do_unlink=True)
+            continue
+        if key in seen:
+            bpy.data.objects.remove(tag, do_unlink=True)
+            continue
+        seen.add(key)
+
+    for key, (_, default_point) in quads.items():
+        if key in seen:
+            continue
+        _create_quad_center_tag(collection, default_point, key, unit)
+
+
+def apply_quad_center_tags(target, source, fan_plates, unit):
+    """Return fan plates with centers overridden by matching center tags."""
+    collection = _find_quad_center_collection(target)
+    if collection is None:
+        return fan_plates
+    tags = _quad_center_tags(collection)
+    if not tags:
+        return fan_plates
+
+    matrix = source.matrix_world
+    tolerance = unit * QUAD_CENTER_TOLERANCE_RATIO
+    plates = []
+    for plate in fan_plates:
+        back_center = plate.get("back_center")
+        if len(plate["faces"]) != 2 or back_center is None:
+            plates.append(plate)
+            continue
+
+        center = plate["center"]
+        points = [
+            matrix @ source.data.vertices[index].co
+            for index in (center, back_center)
+        ]
+        key = _quad_key(points, unit)
+        chosen = None
+        for tag in tags:
+            if tag.get(QUAD_CENTER_KEY) != key:
+                continue
+            chosen = _tag_endpoint_index(tag, points, tolerance)
+            if chosen is not None:
+                break
+        if chosen is None or chosen == 0:
+            plates.append(plate)
+            continue
+
+        loop = (center,) + plate["boundary"]
+        if back_center not in loop:
+            plates.append(plate)
+            continue
+        index = loop.index(back_center)
+        rotated = loop[index:] + loop[:index]
+        updated = dict(plate)
+        updated["center"] = back_center
+        updated["boundary"] = tuple(rotated[1:])
+        updated["back_center"] = center
+        plates.append(updated)
+    return plates
 
 
 def _apply_all_modifiers(obj, unit=AM_GRID_UNIT_SIZE):
@@ -1470,6 +1662,7 @@ def create_preview_object(target, size=AM_GRID_UNIT_SIZE,
             preview_material, window_material, fan_edges,
             fan_double_faces, fan_single_faces
         )
+        update_quad_center_tags(target, temp, fan_plates, size)
     finally:
         _remove_temp_object(temp)
     preview = bpy.data.objects.new(mesh.name, mesh)

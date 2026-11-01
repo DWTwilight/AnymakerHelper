@@ -27,6 +27,10 @@ Requires Blender 4.5 LTS.
   the individual caps but omits the internal seam edges, and export writes one
   non-planar plate whose nodes start at the fan center and then follow the
   outer boundary. Mark all plate boundary edges sharp to make it double-sided.
+- **Manual quad centers:** Each preview creates a `{target}_Quad_Centers`
+  collection with movable empty tags for two-face non-planar quads. Move a tag
+  to either seam endpoint to choose the exported center; invalid tags are
+  removed and missing tags are recreated on the next preview.
 - **Save file export:** Writes the `.meta` and `.data` JSON the game reads, plus
   in-scene labels naming every node and plate it exported.
 - **Object or collection targets:** A target is one mesh object or a collection
