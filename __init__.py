@@ -457,6 +457,82 @@ class ANYMAKER_OT_export_save(Operator):
         return context.window_manager.invoke_props_dialog(self)
 
 
+class ANYMAKER_OT_update_export(Operator):
+    """Update nodes, edges and plates in an existing Anymaker .data file"""
+    bl_idname = "anymaker.update_export"
+    bl_label = "Update Save File"
+    bl_options = {'REGISTER', 'PRESET', 'UNDO'}
+
+    data_file: StringProperty(
+        name="Data File",
+        description="Existing .data file whose vehicle will be updated",
+        subtype='FILE_PATH',
+        default="",
+    )
+    vehicle_id: IntProperty(
+        name="Vehicle ID",
+        description="Id of the vehicle to replace inside the data file",
+        default=99,
+        min=0,
+    )
+    include_hidden: BoolProperty(
+        name="Include Hidden Objects",
+        description="Include hidden objects in the collection in the update",
+        default=True,
+    )
+
+    @classmethod
+    def poll(cls, context):
+        return _target_ready(context.scene)
+
+    def execute(self, context):
+        _ensure_window_material()
+        target = _current_target(context.scene)
+        unit = context.scene.anymaker_settings.grid_unit_size
+        include_hidden = self.include_hidden
+        if not isinstance(target, bpy.types.Collection):
+            include_hidden = True
+        if not self.data_file:
+            self.report({'ERROR'}, "Select a .data file to update")
+            return {'CANCELLED'}
+        if not utils.iter_mesh_objects(target, include_hidden):
+            self.report(
+                {'ERROR'}, f"{target.name}: no mesh objects to export"
+            )
+            return {'CANCELLED'}
+        try:
+            result = utils.update_vehicle_data_file(
+                target,
+                self.data_file,
+                self.vehicle_id,
+                unit,
+                include_hidden,
+            )
+        except (OSError, ValueError) as error:
+            self.report({'ERROR'}, f"Update failed: {error}")
+            return {'CANCELLED'}
+
+        backup = os.path.basename(result["backup_path"])
+        self.report(
+            {'INFO'},
+            f"Updated vehicle {self.vehicle_id} "
+            f"({result['nodes']} nodes, {result['plates']} plates); "
+            f"backup: {backup}"
+            + snap_note(result["moved"], result["merged"]),
+        )
+        return {'FINISHED'}
+
+    def draw(self, context):
+        layout = self.layout
+        layout.prop(self, "data_file")
+        layout.prop(self, "vehicle_id")
+        if context.scene.anymaker_target_type == 'COLLECTION':
+            layout.prop(self, "include_hidden")
+
+    def invoke(self, context, event):
+        return context.window_manager.invoke_props_dialog(self)
+
+
 class VIEW3D_PT_anymaker_helper(Panel):
     bl_label = "Anymaker Helper"
     bl_idname = "VIEW3D_PT_anymaker_helper"
@@ -495,6 +571,7 @@ class VIEW3D_PT_anymaker_helper(Panel):
         layout.operator("anymaker.flip_quad_center_tag",
                         icon='ARROW_LEFTRIGHT')
         layout.operator("anymaker.export_save_file", icon='EXPORT')
+        layout.operator("anymaker.update_export", icon='FILE_REFRESH')
 
 
 classes = (
@@ -504,6 +581,7 @@ classes = (
     ANYMAKER_OT_flip_quad_center_tag,
     ANYMAKER_OT_apply_grid_gap,
     ANYMAKER_OT_export_save,
+    ANYMAKER_OT_update_export,
     VIEW3D_PT_anymaker_helper,
 )
 

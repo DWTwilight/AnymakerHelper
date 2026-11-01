@@ -11,6 +11,7 @@
 import json
 import math
 import os
+import shutil
 
 import bmesh # type: ignore
 import bpy # type: ignore
@@ -1001,6 +1002,72 @@ def export_vehicle(source, vehicle_id, output_dir, name="vehicle",
         "meta_path": meta_path,
         "data_path": data_path,
         "collection": collection,
+        "moved": moved,
+        "merged": merged,
+        "nodes": nodes,
+        "plates": plates,
+    }
+
+
+def update_vehicle_data_file(source, data_path, vehicle_id,
+                           unit=AM_GRID_UNIT_SIZE, include_hidden=True):
+    """Update one vehicle's nodes, edges and plates in an existing .data file.
+
+    A backup is written next to the original as <name>_bak.data before the
+    original is overwritten. All other vehicle fields are left untouched.
+    """
+    path = bpy.path.abspath(data_path)
+    if not path or not os.path.isfile(path):
+        raise ValueError(f"Data file not found: {data_path}")
+
+    pre_moved, pre_merged, _, _ = snap_target_to_grid_points(
+        source, unit, include_hidden
+    )
+    temp = _combined_temp_object(source, include_hidden, unit)
+    try:
+        post_moved, post_merged, _, _ = snap_to_grid_points(temp, unit)
+        moved = pre_moved + post_moved
+        merged = pre_merged + post_merged
+        fan_plates, fan_edges = analyze_fan_plates(temp)
+        fan_plates = apply_quad_center_tags(source, temp, fan_plates, unit)
+        new_data = build_vehicle_data(
+            temp, vehicle_id, unit, fan_plates, fan_edges
+        )
+        new_vehicle = new_data["vehicles"]["vehicles"][0]
+        nodes = len(temp.data.vertices)
+        plates = len(_export_plate_entries(temp, fan_plates))
+    finally:
+        _remove_temp_object(temp)
+
+    with open(path, "r", encoding="utf-8") as handle:
+        payload = json.load(handle)
+
+    vehicles_section = payload.get("vehicles")
+    vehicles = (
+        vehicles_section.get("vehicles")
+        if isinstance(vehicles_section, dict) else None
+    )
+    if not isinstance(vehicles, list):
+        raise ValueError("Data file has no vehicles.vehicles list")
+    target = next(
+        (vehicle for vehicle in vehicles
+         if isinstance(vehicle, dict)
+         and vehicle.get("id") == vehicle_id),
+        None,
+    )
+    if target is None:
+        raise ValueError(f"Vehicle id {vehicle_id} not found")
+    for key in ("nodes", "edges", "plates"):
+        target[key] = new_vehicle[key]
+
+    root, extension = os.path.splitext(path)
+    backup_path = f"{root}_bak{extension or '.data'}"
+    shutil.copyfile(path, backup_path)
+    _write_json(path, payload)
+
+    return {
+        "data_path": path,
+        "backup_path": backup_path,
         "moved": moved,
         "merged": merged,
         "nodes": nodes,

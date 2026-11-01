@@ -58,6 +58,7 @@
 | Generate Preview Mesh | 创建或替换游戏内预览网格：`{name}_AM_preview` |
 | Flip Quad Center Tag | 把选中的四边形中心标记移动到缝边的另一个端点 |
 | Export Save File | 写出 `<name>.meta` 与 `<name>.data`；集合模式的弹窗中提供 `Include Hidden Objects` 选项 |
+| Update Save File | 只替换现有 `.data` 文件中一个载具的 nodes、edges 与 plates，并写出 `<name>_bak.data` 备份 |
 
 ### 设置项
 

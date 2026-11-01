@@ -70,6 +70,7 @@ The three geometry buttons stay greyed out until it holds at least one mesh.
 | Generate Preview Mesh | Creates or replaces the in-game preview mesh: `{name}_AM_preview` |
 | Flip Quad Center Tag | Moves the selected quad center tag(s) to the other seam endpoint |
 | Export Save File | Writes `<name>.meta` and `<name>.data`; its dialog has an `Include Hidden Objects` option for collections |
+| Update Save File | Replaces one vehicle's nodes, edges and plates in an existing `.data` file and writes a `<name>_bak.data` backup |
 
 ### Settings
 
